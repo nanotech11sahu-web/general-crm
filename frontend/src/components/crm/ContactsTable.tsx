@@ -1,21 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  MoreHorizontal,
-  Search,
-  Users,
-  Plus,
-  Eye,
-  Calendar,
-  MessageCircle,
-  Phone,
-  Archive,
-  Trash2,
-  ChevronLeft,
-  ChevronRight,
-} from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Search, Users, Plus, Eye, Archive, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { listContacts, archiveContact, deleteContact } from '../../lib/api/contacts';
 import { Input } from '../ui/Input';
 import { Button } from '../ui/Button';
@@ -59,7 +46,6 @@ export function ContactsTable() {
   const [search, setSearch] = useState('');
   const [archived, setArchived] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const limit = 25;
 
@@ -78,14 +64,12 @@ export function ContactsTable() {
     await archiveContact(id);
     queryClient.invalidateQueries({ queryKey: ['contacts'] });
     toast('Contact archived', { variant: 'success' });
-    setOpenMenuId(null);
   }
 
   async function handleDelete(id: string) {
     await deleteContact(id);
     queryClient.invalidateQueries({ queryKey: ['contacts'] });
     toast('Contact deleted', { variant: 'success', description: 'Moved to Recover (30-day retention)' });
-    setOpenMenuId(null);
   }
 
   return (
@@ -223,32 +207,7 @@ export function ContactsTable() {
                         >
                           <Trash2 className="h-4 w-4" aria-hidden />
                         </button>
-                        <button
-                          type="button"
-                          aria-label={`More actions for ${contact.name}`}
-                          aria-haspopup="menu"
-                          className="icon-btn bg-[var(--color-surface-muted)] text-[var(--color-text-muted)]"
-                          onClick={() => setOpenMenuId(openMenuId === contact._id ? null : contact._id)}
-                        >
-                          <MoreHorizontal className="h-4 w-4" aria-hidden />
-                        </button>
                       </div>
-                      <AnimatePresence>
-                        {openMenuId === contact._id && (
-                          <motion.div
-                            role="menu"
-                            initial={{ opacity: 0, y: -4, scale: 0.98 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: -4, scale: 0.98 }}
-                            transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
-                            className="absolute right-4 top-14 z-10 w-44 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-1 text-left shadow-[var(--shadow-pop)]"
-                          >
-                            <MenuItem icon={Calendar} label="Book Appointment" onClick={() => setOpenMenuId(null)} />
-                            <MenuItem icon={MessageCircle} label="Send WhatsApp" onClick={() => setOpenMenuId(null)} />
-                            <MenuItem icon={Phone} label="Call" onClick={() => setOpenMenuId(null)} />
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
                     </td>
                   </motion.tr>
                 ))}
@@ -308,31 +267,5 @@ export function ContactsTable() {
 
       <AddContactModal open={addOpen} onClose={() => setAddOpen(false)} />
     </div>
-  );
-}
-
-function MenuItem({
-  icon: Icon,
-  label,
-  onClick,
-  tone,
-}: {
-  icon: typeof Eye;
-  label: string;
-  onClick: () => void;
-  tone?: 'danger';
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors duration-150 hover:bg-[var(--color-surface-muted)] ${
-        tone === 'danger' ? 'text-[var(--color-danger)]' : 'text-[var(--color-text)]'
-      }`}
-    >
-      <Icon className="h-4 w-4" aria-hidden />
-      {label}
-    </button>
   );
 }

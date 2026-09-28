@@ -9,6 +9,10 @@ export interface IAdAccount extends Document {
   platform: AdPlatform;
   status: 'not_connected' | 'connected';
   externalAccountId?: string;
+  accountName?: string;
+  /** AES-256-GCM encrypted long-lived access token. Never expose this field to the API response. */
+  accessTokenEncrypted?: string;
+  tokenExpiresAt?: Date;
   connectedAt?: Date;
 }
 
@@ -18,6 +22,9 @@ const adAccountSchema = new Schema<IAdAccount>(
     platform: { type: String, enum: AD_PLATFORMS, required: true },
     status: { type: String, enum: ['not_connected', 'connected'], default: 'not_connected' },
     externalAccountId: { type: String },
+    accountName: { type: String },
+    accessTokenEncrypted: { type: String, select: false },
+    tokenExpiresAt: { type: Date },
     connectedAt: { type: Date },
   },
   { timestamps: true },

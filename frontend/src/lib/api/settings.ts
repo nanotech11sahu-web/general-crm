@@ -200,6 +200,42 @@ export async function disconnectGenericIntegration(key: string) {
   return res.data;
 }
 
+export async function getMetaLeadAdsOAuthUrl(intent: 'facebook_lead_ads' | 'instagram_lead_ads') {
+  const res = await api.get('/app-store/integrations/meta/oauth-url', { params: { intent } });
+  return res.data.url as string;
+}
+
+export interface MetaAppConfigDoc {
+  appId: string | null;
+  configured: boolean;
+  redirectUri: string;
+}
+
+export async function getMetaAppConfig() {
+  const res = await api.get('/app-store/integrations/meta/config');
+  return res.data as MetaAppConfigDoc;
+}
+
+export async function saveMetaAppConfig(payload: { appId: string; appSecret: string }) {
+  const res = await api.put('/app-store/integrations/meta/config', payload);
+  return res.data as MetaAppConfigDoc;
+}
+
+export async function deleteMetaAppConfig() {
+  const res = await api.delete('/app-store/integrations/meta/config');
+  return res.data as { configured: boolean };
+}
+
+export async function connectRazorpay(payload: { keyId: string; keySecret: string }) {
+  const res = await api.post('/app-store/integrations/razorpay/connect', payload);
+  return res.data.connection;
+}
+
+export async function disconnectRazorpay() {
+  const res = await api.post('/app-store/integrations/razorpay/disconnect');
+  return res.data;
+}
+
 // --- Analytics ---
 export async function getAnalytics() {
   const res = await api.get('/analytics');

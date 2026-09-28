@@ -34,6 +34,7 @@ export interface AdAccountDoc {
   platform: 'meta' | 'google' | 'linkedin';
   status: 'not_connected' | 'connected';
   externalAccountId?: string;
+  accountName?: string;
 }
 
 export interface AdOverview {
