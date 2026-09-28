@@ -21,6 +21,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     ? NAV_ITEMS.filter((item) => activeVertical.navKeys.includes(item.key))
     : NAV_ITEMS;
 
+  // NavLink matches by path prefix, so a parent route (e.g. /lead-management) and a more
+  // specific sibling route (e.g. /lead-management/import) would both light up at once on
+  // the sibling's page. Only the single longest matching entry should be highlighted.
+  const activeItemKey = visibleNavItems
+    .filter((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))
+    .sort((a, b) => b.to.length - a.to.length)[0]?.key;
+
   return (
     <aside
       className={clsx(
@@ -50,14 +57,12 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             <li key={item.key}>
               <NavLink
                 to={item.to}
-                className={({ isActive }) =>
-                  clsx(
-                    'group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium transition-colors duration-150',
-                    isActive
-                      ? 'bg-[var(--color-primary)] text-white'
-                      : 'text-[var(--color-text-muted)] hover:text-[var(--color-primary)]',
-                  )
-                }
+                className={clsx(
+                  'group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium transition-colors duration-150',
+                  item.key === activeItemKey
+                    ? 'bg-[var(--color-primary)] text-white'
+                    : 'text-[var(--color-text-muted)] hover:text-[var(--color-primary)]',
+                )}
               >
                 <item.icon className="h-5 w-5 shrink-0" aria-hidden />
                 {!collapsed && <span>{item.label}</span>}

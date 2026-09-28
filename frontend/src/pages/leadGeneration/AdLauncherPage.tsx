@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import type { AxiosError } from 'axios';
 import clsx from 'clsx';
 import { Megaphone, Radio } from 'lucide-react';
-import { listAdAccounts, connectAdAccount, getAdOverview } from '../../lib/api/adLauncher';
+import { listAdAccounts, getMetaOAuthUrl, disconnectAdAccount, getAdOverview } from '../../lib/api/adLauncher';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { SkeletonList } from '../../components/ui/Skeleton';
 import { toast } from '../../stores/toastStore';
@@ -72,15 +75,60 @@ function OverviewTab() {
   );
 }
 
+const META_ERROR_MESSAGES: Record<string, string> = {
+  missing_code: 'Meta did not return an authorization code. Please try connecting again.',
+  invalid_state: 'That connection link expired or was tampered with. Please try connecting again.',
+  no_ad_accounts: 'Your Meta account has no ad accounts. Create one in Meta Ads Manager first, then reconnect.',
+};
+
 function CreateTab() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: accounts, isLoading } = useQuery({ queryKey: ['ad-accounts'], queryFn: listAdAccounts });
 
+  useEffect(() => {
+    const meta = searchParams.get('meta');
+    if (!meta) return;
+    if (meta === 'connected') {
+      queryClient.invalidateQueries({ queryKey: ['ad-accounts'] });
+      toast('Meta Ads account connected', { variant: 'success' });
+    } else if (meta === 'error') {
+      const reason = searchParams.get('reason') ?? '';
+      toast('Could not connect Meta Ads', {
+        variant: 'error',
+        description: META_ERROR_MESSAGES[reason] ?? reason ?? 'Please try again.',
+      });
+    }
+    setSearchParams((prev) => {
+      prev.delete('meta');
+      prev.delete('reason');
+      return prev;
+    }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
   const connectMutation = useMutation({
-    mutationFn: () => connectAdAccount('meta'),
+    mutationFn: getMetaOAuthUrl,
+    onSuccess: (url) => {
+      window.location.href = url;
+    },
+    onError: (err: AxiosError<{ error?: string }>) => {
+      const description = err.response?.data?.error ?? 'Please try again.';
+      const needsMetaApp = err.response?.status === 400 && description.toLowerCase().includes('meta app');
+      toast('Could not start Meta connection', {
+        variant: 'error',
+        description: needsMetaApp ? `${description} Go to Settings > App Store to set it up.` : description,
+      });
+      if (needsMetaApp) navigate('/settings/app-store');
+    },
+  });
+
+  const disconnectMutation = useMutation({
+    mutationFn: () => disconnectAdAccount('meta'),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ad-accounts'] });
-      toast('Meta account connected', { variant: 'success' });
+      toast('Meta Ads account disconnected', { variant: 'success' });
     },
   });
 
@@ -92,7 +140,7 @@ function CreateTab() {
       <EmptyState
         icon={Radio}
         title="No ad platform connected"
-        description="Connect your Meta Ads account to launch and track campaigns."
+        description="Connect your Meta Ads account to launch and track campaigns. You'll be redirected to Meta to authorize access."
         actionLabel="Connect Meta Account"
         onAction={() => connectMutation.mutate()}
       />
@@ -104,11 +152,16 @@ function CreateTab() {
       <div className="flex items-center gap-2">
         <Megaphone className="h-5 w-5 text-[var(--color-primary)]" />
         <div>
-          <p className="font-medium">Meta Ads</p>
+          <p className="font-medium">{metaAccount.accountName ?? 'Meta Ads'}</p>
           <p className="text-xs text-[var(--color-text-muted)]">{metaAccount.externalAccountId}</p>
         </div>
       </div>
-      <Badge tone="success">Connected</Badge>
+      <div className="flex items-center gap-2">
+        <Badge tone="success">Connected</Badge>
+        <Button size="sm" variant="ghost" loading={disconnectMutation.isPending} onClick={() => disconnectMutation.mutate()}>
+          Disconnect
+        </Button>
+      </div>
     </Card>
   );
 }

@@ -18,5 +18,10 @@ export const env = {
   jwtAccessExpires: process.env.JWT_ACCESS_EXPIRES ?? '15m',
   jwtRefreshExpires: process.env.JWT_REFRESH_EXPIRES ?? '7d',
   clientOrigin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',
+  apiPublicUrl: process.env.API_PUBLIC_URL ?? `http://localhost:${Number(process.env.PORT ?? 4000)}`,
   nodeEnv: process.env.NODE_ENV ?? 'development',
+  encryptionKey: required('ENCRYPTION_KEY', 'dev_only_encryption_key_do_not_use_in_prod'),
+  // Meta app credentials (App ID/Secret) are NOT server-wide env vars — each workspace
+  // registers and stores its own Meta app via Settings > App Store (see MetaAppConfig).
+  metaApiVersion: process.env.META_API_VERSION ?? 'v21.0',
 };
