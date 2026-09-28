@@ -38,7 +38,7 @@ export const VERTICALS: Vertical[] = [
     icon: LeadsIcon,
     accent: 'blue',
     homePath: '/lead-management',
-    navKeys: ['lead-generation', 'lead-management', 'lead-automation', 'sales'],
+    navKeys: ['lead-management', 'lead-import', 'lead-automation', 'sales'],
   },
   {
     key: 'meetings',
