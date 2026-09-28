@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid } from 'recharts';
+import { AreaChart, Area, ResponsiveContainer, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
 import { Users, TrendingUp, CalendarDays, Target, MapPin, Layers } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { getContactStats } from '../../lib/api/contactStats';
@@ -15,6 +15,8 @@ const KPI_META: { key: string; label: string; icon: typeof Users; tone: StatTone
   { key: 'topCity', label: 'Top City', icon: MapPin, tone: 'blue' },
   { key: 'uniqueSources', label: 'Unique Sources', icon: Layers, tone: 'cyan' },
 ];
+
+const DONUT_COLORS = ['#7c3aed', '#059669', '#d97706', '#e11d48', '#2563eb', '#0891b2'];
 
 export function StatsPage() {
   const navigate = useNavigate();
@@ -85,18 +87,50 @@ export function StatsPage() {
         </Card>
 
         <Card>
-          <h3 className="mb-1 font-semibold">Acquisition Funnel</h3>
-          <p className="mb-4 text-sm text-[var(--color-text-muted)]">Where leads are in the journey.</p>
-          <div className="space-y-2">
-            {data.funnel.map((step) => (
-              <div key={step.step} className="flex items-center justify-between rounded-[var(--radius-md)] bg-[var(--color-surface-muted)] px-3 py-2">
-                <span className="text-sm">{step.step}</span>
-                <span className="text-sm font-semibold">{step.count}</span>
+          <h3 className="mb-1 font-semibold">Lifecycle Breakdown</h3>
+          <p className="mb-2 text-sm text-[var(--color-text-muted)]">Where leads sit right now.</p>
+          {data.lifecycleBreakdown.length === 0 ? (
+            <p className="py-8 text-center text-sm text-[var(--color-text-muted)]">No leads yet.</p>
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={160}>
+                <PieChart>
+                  <Pie data={data.lifecycleBreakdown} dataKey="count" nameKey="stage" innerRadius={45} outerRadius={65} paddingAngle={2}>
+                    {data.lifecycleBreakdown.map((entry, i) => (
+                      <Cell key={entry.stage} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                {data.lifecycleBreakdown.map((entry, i) => (
+                  <span key={entry.stage} className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DONUT_COLORS[i % DONUT_COLORS.length] }} />
+                    {entry.stage} · {entry.count}
+                  </span>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          )}
         </Card>
       </div>
+
+      <Card>
+        <h3 className="mb-1 font-semibold">Acquisition Funnel</h3>
+        <p className="mb-4 text-sm text-[var(--color-text-muted)]">Where leads are in the journey.</p>
+        <div className="flex flex-wrap gap-2">
+          {data.funnel.map((step, i) => (
+            <div key={step.step} className="flex items-center gap-2">
+              <div className="rounded-[var(--radius-md)] bg-[var(--color-surface-muted)] px-3 py-2 text-center">
+                <p className="text-xs text-[var(--color-text-muted)]">{step.step}</p>
+                <p className="text-lg font-semibold">{step.count}</p>
+              </div>
+              {i < data.funnel.length - 1 && <span className="text-[var(--color-text-muted)]">&rarr;</span>}
+            </div>
+          ))}
+        </div>
+      </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
