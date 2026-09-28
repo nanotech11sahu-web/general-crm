@@ -19,6 +19,7 @@ export async function getContactStats(workspaceId: string, range: ContactStatsRa
     sourceLeaderboard,
     cityLeaderboard,
     lifecycleBreakdown,
+    temperatureBreakdownRaw,
     heatmapRaw,
   ] = await Promise.all([
     Contact.countDocuments(match),
@@ -46,6 +47,10 @@ export async function getContactStats(workspaceId: string, range: ContactStatsRa
     Contact.aggregate([
       { $match: match },
       { $group: { _id: '$lifecycleStage', count: { $sum: 1 } } },
+    ]),
+    Contact.aggregate([
+      { $match: match },
+      { $group: { _id: '$temperature', count: { $sum: 1 } } },
     ]),
     Contact.aggregate([
       { $match: match },
@@ -101,6 +106,7 @@ export async function getContactStats(workspaceId: string, range: ContactStatsRa
     sourceLeaderboard: sourceLeaderboard.map((s) => ({ source: s._id ?? 'Unknown', count: s.count })),
     cityLeaderboard: cityLeaderboard.map((c) => ({ city: c._id, count: c.count })),
     lifecycleBreakdown: lifecycleBreakdown.map((l) => ({ stage: l._id, count: l.count })),
+    temperatureBreakdown: temperatureBreakdownRaw.map((t) => ({ temperature: t._id, count: t.count })),
     heatmap,
   };
 }
