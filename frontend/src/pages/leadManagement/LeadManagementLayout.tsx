@@ -19,7 +19,7 @@ export function LeadManagementLayout() {
     <div className="space-y-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between animate-fade-in-up">
         <div className="flex items-center gap-3">
-          <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[image:var(--gradient-primary)] text-white shadow-sm">
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--color-primary)] text-white">
             <Users className="h-5 w-5" aria-hidden />
           </span>
           <div>
@@ -45,14 +45,14 @@ export function LeadManagementLayout() {
               key={tab.to}
               to={tab.to}
               className={clsx(
-                'relative z-10 rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium transition-colors duration-200',
-                isActive ? 'text-[var(--color-primary-fg)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
+                'relative z-10 rounded-[var(--radius-md)] px-3 py-1.5 text-sm font-medium transition-colors duration-200',
+                isActive ? 'text-[var(--color-primary-fg)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-primary)]',
               )}
             >
               {isActive && (
                 <motion.span
                   layoutId="lead-tab-indicator"
-                  className="absolute inset-0 -z-10 rounded-[var(--radius-sm)] bg-[image:var(--gradient-primary)] shadow-sm"
+                  className="absolute inset-0 -z-10 rounded-[var(--radius-md)] bg-[var(--color-primary)]"
                   transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                 />
               )}

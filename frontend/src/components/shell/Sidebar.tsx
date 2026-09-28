@@ -52,20 +52,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
                 to={item.to}
                 className={({ isActive }) =>
                   clsx(
-                    'group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150',
+                    'group flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2.5 text-sm font-medium transition-colors duration-150',
                     isActive
-                      ? 'bg-[var(--color-primary)]/10 text-[var(--color-primary)] shadow-sm'
-                      : 'text-[var(--color-text-muted)] hover:translate-x-0.5 hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-text)]',
+                      ? 'bg-[var(--color-primary)] text-white'
+                      : 'text-[var(--color-text-muted)] hover:text-[var(--color-primary)]',
                   )
                 }
               >
-                {({ isActive }) => (
-                  <>
-                    {isActive && <span className="absolute left-0 top-1/2 h-5 -translate-y-1/2 rounded-r-full bg-[var(--color-primary)]" style={{ width: 3 }} />}
-                    <item.icon className="h-5 w-5 shrink-0 transition-transform duration-150 group-hover:scale-110" aria-hidden />
-                    {!collapsed && <span>{item.label}</span>}
-                  </>
-                )}
+                <item.icon className="h-5 w-5 shrink-0" aria-hidden />
+                {!collapsed && <span>{item.label}</span>}
               </NavLink>
             </li>
           ))}

@@ -66,7 +66,7 @@ describe('ContactsTable', () => {
     renderWithProviders(<ContactsTable />);
 
     await waitFor(() => expect(screen.getByText('Contact page 1')).toBeInTheDocument());
-    expect(screen.getByText(/50000 contacts/)).toBeInTheDocument();
+    expect(screen.getByText(/50000 entries/)).toBeInTheDocument();
     expect(screen.getByLabelText('Previous page')).toBeDisabled();
 
     fireEvent.click(screen.getByLabelText('Next page'));
