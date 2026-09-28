@@ -12,6 +12,7 @@
   --color-primary: #4f46e5;
   --color-primary-hover: #4338ca;
   --color-primary-fg: #ffffff;
+  --color-primary-soft: #eef2ff;
   --color-success: #16a34a;
   --color-warning: #d97706;
   --color-danger: #dc2626;
@@ -22,6 +23,10 @@
   --radius-md: 10px;
   --radius-lg: 16px;
   --shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.06), 0 1px 3px 0 rgb(15 23 42 / 0.08);
+  --shadow-card-hover: 0 8px 24px -4px rgb(15 23 42 / 0.1), 0 2px 8px -2px rgb(15 23 42 / 0.08);
+  --shadow-pop: 0 12px 32px -8px rgb(15 23 42 / 0.18);
+  --gradient-primary: linear-gradient(135deg, #6366f1 0%, #4f46e5 55%, #4338ca 100%);
+  --ease-snappy: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .dark {
@@ -34,7 +39,11 @@
   --color-primary: #6366f1;
   --color-primary-hover: #818cf8;
   --color-primary-fg: #0b1120;
+  --color-primary-soft: rgb(99 102 241 / 0.12);
   --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.4), 0 1px 3px 0 rgb(0 0 0 / 0.3);
+  --shadow-card-hover: 0 10px 28px -4px rgb(0 0 0 / 0.55), 0 2px 10px -2px rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 16px 36px -8px rgb(0 0 0 / 0.6);
+  --gradient-primary: linear-gradient(135deg, #818cf8 0%, #6366f1 55%, #4f46e5 100%);
 }
 
 @theme inline {
@@ -47,6 +56,7 @@
   --color-primary: var(--color-primary);
   --color-primary-hover: var(--color-primary-hover);
   --color-primary-fg: var(--color-primary-fg);
+  --color-primary-soft: var(--color-primary-soft);
   --color-success: var(--color-success);
   --color-warning: var(--color-warning);
   --color-danger: var(--color-danger);
@@ -68,6 +78,53 @@ body,
 body {
   background-color: var(--color-bg);
   color: var(--color-text);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: var(--color-border);
+  border-radius: 999px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.card-hover {
+  transition:
+    transform 220ms var(--ease-snappy),
+    box-shadow 220ms var(--ease-snappy),
+    border-color 220ms var(--ease-snappy);
+}
+
+.card-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 25%, var(--color-border));
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 320ms var(--ease-snappy) both;
 }
 
 @media (prefers-reduced-motion: reduce) {

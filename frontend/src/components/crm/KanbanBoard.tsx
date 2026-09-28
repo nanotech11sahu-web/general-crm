@@ -20,6 +20,21 @@ import { Badge } from '../ui/Badge';
 import type { Opportunity, PipelineStage } from '../../types/crm';
 import { toast } from '../../stores/toastStore';
 
+const STAGE_ACCENTS = ['#6366f1', '#0891b2', '#d97706', '#16a34a', '#e11d48', '#7c3aed'];
+
+function stageAccent(index: number) {
+  return STAGE_ACCENTS[index % STAGE_ACCENTS.length];
+}
+
+function initials(name: string) {
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('');
+}
+
 function KanbanCard({ opportunity }: { opportunity: Opportunity }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: opportunity._id });
   const style = transform
@@ -32,21 +47,32 @@ function KanbanCard({ opportunity }: { opportunity: Opportunity }) {
       style={style}
       layout
       initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: isDragging ? 0.4 : 1, y: 0 }}
-      transition={{ duration: 0.15 }}
-      className="cursor-grab rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 shadow-sm active:cursor-grabbing"
+      animate={{ opacity: isDragging ? 0.45 : 1, y: 0, scale: isDragging ? 1.03 : 1 }}
+      whileHover={{ y: -2 }}
+      transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+      className={`group cursor-grab rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 transition-shadow duration-200 active:cursor-grabbing ${
+        isDragging ? 'shadow-[var(--shadow-pop)] ring-2 ring-[var(--color-primary)]/40' : 'shadow-sm hover:shadow-[var(--shadow-card-hover)]'
+      }`}
       {...listeners}
       {...attributes}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium">{opportunity.name}</p>
-        <GripVertical className="h-4 w-4 shrink-0 text-[var(--color-text-muted)]" aria-hidden />
+        <div className="flex items-center gap-2">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[image:var(--gradient-primary)] text-[11px] font-semibold text-white">
+            {initials(opportunity.name) || '•'}
+          </span>
+          <p className="text-sm font-medium leading-tight">{opportunity.name}</p>
+        </div>
+        <GripVertical
+          className="h-4 w-4 shrink-0 text-[var(--color-text-muted)] opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+          aria-hidden
+        />
       </div>
-      {opportunity.productInterest && <p className="mt-1 text-xs text-[var(--color-text-muted)]">{opportunity.productInterest}</p>}
+      {opportunity.productInterest && <p className="mt-1.5 pl-9 text-xs text-[var(--color-text-muted)]">{opportunity.productInterest}</p>}
       {typeof opportunity.value === 'number' && (
-        <Badge tone="success" className="mt-2">
-          ₹{opportunity.value.toLocaleString()}
-        </Badge>
+        <div className="mt-2 pl-9">
+          <Badge tone="success">₹{opportunity.value.toLocaleString()}</Badge>
+        </div>
       )}
     </motion.div>
   );
@@ -60,20 +86,36 @@ const VIRTUALIZE_THRESHOLD = 50;
 const CARD_ROW_HEIGHT = 96;
 const VIRTUAL_LIST_HEIGHT = 560;
 
-function KanbanColumn({ stage, opportunities }: { stage: PipelineStage; opportunities: Opportunity[] }) {
+function KanbanColumn({
+  stage,
+  opportunities,
+  accent,
+}: {
+  stage: PipelineStage;
+  opportunities: Opportunity[];
+  accent: string;
+}) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.key });
   const shouldVirtualize = opportunities.length > VIRTUALIZE_THRESHOLD;
 
   return (
     <div
       ref={setNodeRef}
-      className={`flex w-72 shrink-0 flex-col rounded-[var(--radius-lg)] border border-[var(--color-border)] p-2 transition-colors ${
-        isOver ? 'bg-[var(--color-primary)]/5' : 'bg-[var(--color-surface-muted)]'
+      className={`flex w-72 shrink-0 flex-col rounded-[var(--radius-lg)] border p-2 transition-all duration-200 ${
+        isOver
+          ? 'border-[var(--color-primary)]/50 bg-[var(--color-primary-soft)] shadow-[var(--shadow-card-hover)]'
+          : 'border-[var(--color-border)] bg-[var(--color-surface-muted)]'
       }`}
     >
-      <div className="mb-2 flex items-center justify-between px-1">
-        <p className="text-sm font-semibold">{stage.label}</p>
-        <Badge>{opportunities.length}</Badge>
+      <div className="mb-2 flex items-center justify-between px-1 pt-1">
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: accent }} aria-hidden />
+          <p className="text-sm font-semibold">{stage.label}</p>
+        </div>
+        <Badge className="tabular-nums">{opportunities.length}</Badge>
+      </div>
+      <div className="mb-2 h-0.5 w-full overflow-hidden rounded-full bg-[var(--color-border)]/60">
+        <div className="h-full rounded-full transition-all duration-300" style={{ backgroundColor: accent, width: '100%' }} />
       </div>
       {shouldVirtualize ? (
         <FixedSizeList
@@ -165,7 +207,7 @@ export function KanbanBoard({ onAddLead }: { onAddLead: () => void }) {
       <div className="flex items-center gap-2">
         <select
           aria-label="Select pipeline"
-          className="h-9 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-sm"
+          className="h-9 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-sm transition-colors duration-150 hover:border-[var(--color-primary)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]"
           value={activePipeline?._id}
           onChange={(e) => setPipelineId(e.target.value)}
         >
@@ -178,7 +220,7 @@ export function KanbanBoard({ onAddLead }: { onAddLead: () => void }) {
         <button
           type="button"
           onClick={onAddLead}
-          className="ml-auto flex items-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-[var(--color-primary-fg)]"
+          className="ml-auto flex items-center gap-1.5 rounded-[var(--radius-md)] bg-[image:var(--gradient-primary)] px-3 py-2 text-sm font-medium text-[var(--color-primary-fg)] shadow-sm transition-all duration-150 ease-[var(--ease-snappy)] hover:shadow-md active:scale-[0.97]"
         >
           <Plus className="h-4 w-4" /> Add Lead
         </button>
@@ -188,12 +230,17 @@ export function KanbanBoard({ onAddLead }: { onAddLead: () => void }) {
         <SkeletonList rows={4} />
       ) : (
         <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <div className="flex gap-3 overflow-x-auto pb-2">
+          <div className="scrollbar-thin flex gap-3 overflow-x-auto pb-2">
             {activePipeline?.stages
               .slice()
               .sort((a, b) => a.order - b.order)
-              .map((stage) => (
-                <KanbanColumn key={stage.key} stage={stage} opportunities={opportunitiesByStage.get(stage.key) ?? []} />
+              .map((stage, index) => (
+                <KanbanColumn
+                  key={stage.key}
+                  stage={stage}
+                  opportunities={opportunitiesByStage.get(stage.key) ?? []}
+                  accent={stageAccent(index)}
+                />
               ))}
           </div>
           <DragOverlay>{activeOpportunity ? <KanbanCard opportunity={activeOpportunity} /> : null}</DragOverlay>
