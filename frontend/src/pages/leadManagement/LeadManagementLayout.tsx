@@ -2,14 +2,13 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
-import { Users, RefreshCw, UploadCloud } from 'lucide-react';
+import { Users, RefreshCw } from 'lucide-react';
 import { Button } from '../../components/ui/Button';
 
 const TABS = [
   { to: '/lead-management/stats', label: 'Overview' },
   { to: '/lead-management/leads', label: 'Leads' },
   { to: '/lead-management/pipeline', label: 'Pipeline' },
-  { to: '/lead-management/import', label: 'Import' },
 ];
 
 export function LeadManagementLayout() {
@@ -25,15 +24,10 @@ export function LeadManagementLayout() {
           </span>
           <div>
             <h1 className="text-lg font-semibold tracking-tight">Leads</h1>
-            <p className="text-sm text-[var(--color-text-muted)]">Track, import and manage every lead in one place.</p>
+            <p className="text-sm text-[var(--color-text-muted)]">Track and manage every lead in one place.</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <NavLink to="/lead-management/import">
-            <Button variant="secondary" size="sm">
-              <UploadCloud className="h-4 w-4" /> Import Leads
-            </Button>
-          </NavLink>
           <Button variant="primary" size="sm" onClick={() => queryClient.invalidateQueries()}>
             <RefreshCw className="h-4 w-4" /> Refresh Data
           </Button>
