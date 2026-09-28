@@ -1,0 +1,477 @@
+openapi: 3.0.3
+info:
+  title: PMC Demo API
+  version: "1.0.0"
+  description: |
+    PMC Demo's backend is ~50 route files covering the full 13-phase build (see README.md).
+    Hand-authoring every one of the ~400 endpoints here would drift out of sync immediately and
+    isn't a good use of a hardening pass — instead, this document fully specifies the
+    authentication flow and one representative module per architectural pattern (a plain
+    workspace-scoped CRUD module, a public unauthenticated surface, and the Phase 11/12 additions),
+    and states the pattern every other module follows so a reader can extrapolate correctly.
+
+    **Every other module's routes follow this identical shape:**
+    - Base path `/api/<module>` (see `backend/src/app.ts` for the exact list of mount points).
+    - Every route except `/api/auth/*` and `/api/public/*` requires the `bearerAuth` security
+      scheme below.
+    - Every route enforces both authentication (`authenticate` middleware) and RBAC
+      (`requirePermission(module, action)` middleware) — see `docs/ARCHITECTURE.md` §2 for the
+      permission model and `constants/modules.ts` for the exact module/action keys.
+    - List endpoints return `{ <pluralResourceName>: [...] }`; detail/create/edit endpoints return
+      `{ <singularResourceName>: {...} }`; delete endpoints return `204` with no body.
+    - Every detail/edit/delete route scopes its query by `workspaceId` and returns `404` (never
+      `200` or a distinguishing `403`) for a resource that exists in a different workspace — see
+      `security.routes.test.ts` for the verified sweep across 9 representative modules.
+servers:
+  - url: http://localhost:4000/api
+    description: Local development
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+    TokenPair:
+      type: object
+      properties:
+        accessToken: { type: string, description: "Short-lived JWT (default 15m), carries { sub, workspaceId, membershipId }" }
+        refreshToken: { type: string, description: "Long-lived opaque token (default 7d), single-use — rotated on every /auth/refresh call" }
+    Contact:
+      type: object
+      properties:
+        _id: { type: string }
+        workspaceId: { type: string }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        company: { type: string }
+        lifecycleStage: { type: string, enum: [Lead, MQL, SQL, Opportunity, Customer, Evangelist] }
+        temperature: { type: string, enum: [Hot, Warm, Cold] }
+        leadScore: { type: number }
+        tagIds: { type: array, items: { type: string } }
+        archived: { type: boolean }
+    DashboardKpi:
+      type: object
+      properties:
+        key: { type: string }
+        label: { type: string }
+        value: { oneOf: [{ type: number }, { type: string }, { type: "null" }] }
+        format: { type: string, enum: [number, currency, percent, text] }
+    SearchResult:
+      type: object
+      properties:
+        type: { type: string, enum: [Contact, Project, Product, Form, Funnel, Workflow] }
+        id: { type: string }
+        label: { type: string }
+        subtitle: { type: string }
+        link: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or expired token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated, but the caller's role lacks this module/action permission
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found, or exists only in a different workspace (never distinguished from a genuine 404)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+paths:
+  /auth/signup:
+    post:
+      summary: Create a user, their first workspace (fully seeded), and issue tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, workspaceName]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                workspaceName: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TokenPair"
+                  - type: object
+                    properties:
+                      user: { $ref: "#/components/schemas/User" }
+                      workspace:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          name: { type: string }
+                          slug: { type: string }
+        "409":
+          description: Email already in use
+
+  /auth/login:
+    post:
+      summary: Authenticate and issue tokens for the caller's earliest active workspace membership
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TokenPair"
+                  - type: object
+                    properties:
+                      user: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Invalid email or password
+
+  /auth/refresh:
+    post:
+      summary: Rotate a refresh token for a new access/refresh pair
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: Invalid, expired, or already-used (revoked) refresh token
+
+  /auth/switch-workspace:
+    post:
+      summary: Issue a fresh token pair for a different workspace the caller has an active membership in (Phase 11 agency layer)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId]
+              properties:
+                workspaceId: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "403":
+          description: Not an active member of that workspace
+
+  /auth/me:
+    get:
+      summary: The caller's identity, current workspace id, and resolved effective permissions
+      responses:
+        "200":
+          description: OK
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /contacts:
+    get:
+      summary: List contacts (search, temperature filter, archived toggle, server-side pagination)
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: temperature
+          schema: { type: string, enum: [Hot, Warm, Cold] }
+        - in: query
+          name: archived
+          schema: { type: string, enum: ["true", "false"] }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contacts: { type: array, items: { $ref: "#/components/schemas/Contact" } }
+                  total: { type: integer }
+                  page: { type: integer }
+                  limit: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Create a contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                email: { type: string }
+                phone: { type: string }
+                source: { type: string }
+                customFieldValues: { type: object }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contact: { $ref: "#/components/schemas/Contact" }
+        "400": { description: Validation error }
+
+  /contacts/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get a contact (workspace-scoped)
+      responses:
+        "200":
+          description: OK
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      summary: Update a contact
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Soft-delete a contact into the Recover bin (see /deleted-items)
+      responses:
+        "204": { description: No content }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /dashboard:
+    get:
+      summary: The 14-KPI home dashboard, grouped into 6 categories, for a date range/staff filter (Phase 11)
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+        - in: query
+          name: staffMembershipId
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        group: { type: string }
+                        kpis: { type: array, items: { $ref: "#/components/schemas/DashboardKpi" } }
+                  range:
+                    type: object
+                    properties:
+                      from: { type: string }
+                      to: { type: string }
+                  timezone: { type: string }
+
+  /dashboard/layout:
+    get:
+      summary: This member's saved KPI order/visibility
+      responses:
+        "200": { description: OK }
+    put:
+      summary: Save this member's KPI order/visibility (drag-reorder, show/hide)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layout]
+              properties:
+                layout:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      visible: { type: boolean }
+      responses:
+        "200": { description: OK }
+
+  /search:
+    get:
+      summary: Global search across Contacts, Projects, Products, Forms, Funnels, and Workflows (Phase 11)
+      parameters:
+        - in: query
+          name: q
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { $ref: "#/components/schemas/SearchResult" } }
+
+  /agency:
+    get:
+      summary: The caller's agency (if any) and its member workspaces (Phase 11)
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Turn the caller's current workspace into an agency owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201": { description: Created }
+        "400": { description: This workspace already belongs to an agency }
+
+  /agency/sub-accounts:
+    post:
+      summary: Create a fully-seeded sub-account workspace under the caller's agency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201": { description: Created }
+        "403": { description: Only the agency owner can manage sub-accounts }
+        "404": { description: This workspace is not part of an agency yet }
+
+  /agency/rollup:
+    get:
+      summary: Cross-workspace KPI rollup for every workspace in the caller's agency, this month
+      responses:
+        "200": { description: OK }
+
+  /notifications:
+    get:
+      summary: The caller's notifications (most recent 50) and unread count
+      responses:
+        "200": { description: OK }
+
+  /notifications/read-all:
+    post:
+      summary: Mark every one of the caller's notifications read
+      responses:
+        "204": { description: No content }
+
+  /notifications/{id}/read:
+    post:
+      summary: Mark one notification read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: No content }
+
+  /public/forms/{id}:
+    get:
+      summary: "Public: fetch a published form's fields/style (unauthenticated)"
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found or not published }
+
+  /public/forms/{id}/submit:
+    post:
+      summary: "Public: submit a form (rate-limited per form+IP, GDPR consent/captcha enforced per the form's own settings)"
+      security: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data: { type: object }
+                notARobot: { type: boolean }
+      responses:
+        "201": { description: Created }
+        "400": { description: "Captcha or GDPR consent required" }
+        "404": { description: Not found or not published }
+        "429": { description: Rate limit exceeded for this form+IP }
