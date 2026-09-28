@@ -8,7 +8,14 @@ import { Badge } from '../../components/ui/Badge';
 import { SkeletonList } from '../../components/ui/Skeleton';
 import { toast } from '../../stores/toastStore';
 
-const GENERIC_CONNECTABLE = new Set(['indiamart', 'justdial']);
+const GENERIC_CONNECTABLE = new Set([
+  'indiamart',
+  'justdial',
+  'google_sheets',
+  'facebook_lead_ads',
+  'instagram_lead_ads',
+  'other_crm',
+]);
 
 function SmtpCard() {
   const queryClient = useQueryClient();
