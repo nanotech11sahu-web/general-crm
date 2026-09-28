@@ -75,7 +75,7 @@ interface StatCardProps {
 export function StatCard({ icon: Icon, tone, label, value, trend, sparkline, onViewAll }: StatCardProps) {
   const colors = TONE_CLASSES[tone];
   return (
-    <Card className="flex flex-col gap-3">
+    <Card interactive className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className={clsx('flex h-11 w-11 items-center justify-center rounded-2xl', colors.badge)}>
           <Icon className="h-5 w-5" aria-hidden />

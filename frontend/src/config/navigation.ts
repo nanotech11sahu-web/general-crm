@@ -1,8 +1,8 @@
 import {
   Rocket,
   LayoutDashboard,
-  Target,
   Users,
+  UploadCloud,
   Workflow,
   TrendingUp,
   Sparkles,
@@ -37,8 +37,8 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { key: 'get-started', label: 'Get Started', to: '/get-started', icon: Rocket },
   { key: 'dashboard', label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
-  { key: 'lead-generation', label: 'Lead Generation', to: '/lead-generation', icon: Target },
   { key: 'lead-management', label: 'Lead Management', to: '/lead-management', icon: Users },
+  { key: 'lead-import', label: 'Lead Import', to: '/lead-management/import', icon: UploadCloud },
   { key: 'lead-automation', label: 'Lead Automation', to: '/lead-automation', icon: Workflow },
   { key: 'sales', label: 'Sales', to: '/sales', icon: TrendingUp },
   { key: 'ai-suite', label: 'AI Suite', to: '/ai-suite', icon: Sparkles },

@@ -64,7 +64,7 @@ import { HrmsHome } from './pages/hrms/HrmsHome';
 const EXCLUDED_NAV_KEYS = [
   'dashboard',
   'lead-management',
-  'lead-generation',
+  'lead-import',
   'lead-automation',
   'sales',
   'calendar',
