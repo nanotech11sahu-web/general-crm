@@ -11,6 +11,7 @@ import { deletedItemsRouter } from './routes/deletedItems.routes';
 import { notificationsRouter } from './routes/notifications.routes';
 import { rolesRouter } from './routes/roles.routes';
 import { contactsRouter } from './routes/contacts.routes';
+import { leadImportRouter } from './routes/leadImport.routes';
 import { pipelinesRouter } from './routes/pipelines.routes';
 import { opportunitiesRouter } from './routes/opportunities.routes';
 import { contactStatsRouter } from './routes/contactStats.routes';
@@ -79,6 +80,7 @@ export function createApp() {
   app.use('/api/notifications', notificationsRouter);
   app.use('/api/roles', rolesRouter);
   app.use('/api/contacts', contactsRouter);
+  app.use('/api/lead-import', leadImportRouter);
   app.use('/api/pipelines', pipelinesRouter);
   app.use('/api/opportunities', opportunitiesRouter);
   app.use('/api/contact-stats', contactStatsRouter);

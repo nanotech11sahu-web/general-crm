@@ -29,4 +29,8 @@ export const APP_STORE_CATALOG: AppStoreCatalogEntry[] = [
   { key: 'knowlarity', name: 'Knowlarity', category: 'Telephony', source: 'callProvider', sourceKey: 'knowlarity' },
   { key: 'indiamart', name: 'IndiaMART', category: 'Other', source: 'generic' },
   { key: 'justdial', name: 'JustDial', category: 'Other', source: 'generic' },
+  { key: 'google_sheets', name: 'Google Sheets', category: 'Other', source: 'generic' },
+  { key: 'facebook_lead_ads', name: 'Facebook Lead Ads', category: 'Ads', source: 'generic' },
+  { key: 'instagram_lead_ads', name: 'Instagram Lead Ads', category: 'Ads', source: 'generic' },
+  { key: 'other_crm', name: 'Other CRM', category: 'Other', source: 'generic' },
 ];
