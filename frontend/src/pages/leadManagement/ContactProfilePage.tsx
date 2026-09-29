@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Phone, Mail, MessageCircle, Video, Sparkles, RefreshCw, Ban } from 'lucide-react';
+import { ArrowLeft, Sparkles, RefreshCw, Ban } from 'lucide-react';
 import clsx from 'clsx';
 import {
   getContact,
@@ -83,12 +83,6 @@ export function ContactProfilePage() {
             {contact.company ?? '—'}
           </p>
         </div>
-        <div className="flex gap-1.5">
-          <QuickAction icon={Phone} label="Call" />
-          <QuickAction icon={Mail} label="Email" />
-          <QuickAction icon={MessageCircle} label="Chat" />
-          <QuickAction icon={Video} label="Meet" />
-        </div>
       </Card>
 
       <nav className="flex gap-1 overflow-x-auto border-b border-[var(--color-border)]" aria-label="Contact profile tabs">
@@ -121,18 +115,6 @@ export function ContactProfilePage() {
       {tab === 'Lead Scoring' && <LeadScoringTab contactId={contact._id} />}
       {tab === 'More' && <ComingSoonTab icon={MoreHorizontal} label="More" />}
     </div>
-  );
-}
-
-function QuickAction({ icon: Icon, label }: { icon: typeof Phone; label: string }) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-text)]"
-    >
-      <Icon className="h-4 w-4" />
-    </button>
   );
 }
 
