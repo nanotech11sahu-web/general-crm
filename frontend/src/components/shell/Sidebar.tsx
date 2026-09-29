@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ExternalLink as ExternalLinkIcon, ChevronsLeft, ChevronsRight, LayoutGrid } from 'lucide-react';
+import { ExternalLink as ExternalLinkIcon, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import clsx from 'clsx';
 import { NAV_ITEMS, EXTERNAL_LINKS } from '../../config/navigation';
 import { findVerticalForPath } from '../../config/verticals';
@@ -43,15 +43,6 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
       )}
       <nav className="flex-1 overflow-y-auto px-2 py-4">
-        {activeVertical && (
-          <NavLink
-            to="/"
-            className="mb-3 flex items-center gap-3 rounded-[var(--radius-md)] px-3 py-2 text-sm font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-text)]"
-          >
-            <LayoutGrid className="h-5 w-5 shrink-0" aria-hidden />
-            {!collapsed && <span>All workspaces</span>}
-          </NavLink>
-        )}
         <ul className="space-y-1">
           {visibleNavItems.map((item) => (
             <li key={item.key}>
@@ -71,7 +62,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           ))}
         </ul>
 
-        {!collapsed && (
+        {!collapsed && EXTERNAL_LINKS.length > 0 && (
           <div className="mt-6 border-t border-[var(--color-border)] pt-4">
             <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
               External Links

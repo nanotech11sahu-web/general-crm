@@ -58,7 +58,6 @@ import {
   DeletedItemsPage,
 } from './pages/settings/SettingsPages';
 import { AgencyHome } from './pages/agency/AgencyHome';
-import { HubPage } from './pages/HubPage';
 import { HrmsHome } from './pages/hrms/HrmsHome';
 
 const EXCLUDED_NAV_KEYS = [
@@ -102,7 +101,7 @@ export default function App() {
 
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            <Route path="/" element={<HubPage />} />
+            <Route path="/" element={<Navigate to="/lead-management" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/hrms" element={<HrmsHome />} />
 
