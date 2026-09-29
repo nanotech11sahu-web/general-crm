@@ -67,13 +67,13 @@ function MetaAppCard() {
     },
   });
 
-  if (isLoading) return <Card className="h-24 animate-pulse" />;
+  if (isLoading) return <Card id="meta-app-card" className="h-24 scroll-mt-4 animate-pulse" />;
 
   if (isError) {
     const err = configError as AxiosError<{ error?: string }>;
     const description = err.response?.data?.error ?? err.message ?? 'Could not reach the server.';
     return (
-      <Card className="space-y-2 border border-[var(--color-danger)]">
+      <Card id="meta-app-card" className="space-y-2 scroll-mt-4 border border-[var(--color-danger)]">
         <h4 className="font-semibold">Meta App (Facebook / Instagram)</h4>
         <p className="text-sm text-[var(--color-danger)]">
           Couldn't load your Meta app status ({err.response?.status ?? 'network error'}): {description}
@@ -269,13 +269,17 @@ export function AppStoreTab() {
 
   useEffect(() => {
     if (location.hash !== '#meta-app-card') return;
+    // The Meta card doesn't exist in the DOM until the integrations list finishes loading
+    // (a separate query gates the whole page behind a skeleton), so this must re-check once
+    // that finishes instead of only running once on the initial hash change.
+    if (isLoading) return;
     const el = document.getElementById('meta-app-card');
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
     el.classList.add('ring-2', 'ring-[var(--color-primary)]');
     const timer = setTimeout(() => el.classList.remove('ring-2', 'ring-[var(--color-primary)]'), 2500);
     return () => clearTimeout(timer);
-  }, [location.hash]);
+  }, [location.hash, isLoading]);
 
   useEffect(() => {
     const meta = searchParams.get('meta');
