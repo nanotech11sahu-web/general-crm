@@ -235,22 +235,38 @@ export function LeadImportPage() {
     onError: () => toast('Sync failed', { variant: 'error' }),
   });
 
+  const header = (
+    <div className="flex items-center gap-3">
+      <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--color-primary)] text-white">
+        <UploadCloud className="h-5 w-5" aria-hidden />
+      </span>
+      <div>
+        <h1 className="text-lg font-semibold tracking-tight">Lead Import</h1>
+        <p className="text-sm text-[var(--color-text-muted)]">Bring leads in from CSV, ad platforms, forms, and other sources.</p>
+      </div>
+    </div>
+  );
+
   if (isLoading || !sources) {
     return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <Card key={i} className="h-40">
-            <Skeleton className="h-11 w-11 rounded-2xl" />
-            <Skeleton className="mt-4 h-4 w-32" />
-            <Skeleton className="mt-2 h-3 w-full" />
-          </Card>
-        ))}
+      <div className="space-y-5">
+        {header}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="h-40">
+              <Skeleton className="h-11 w-11 rounded-2xl" />
+              <Skeleton className="mt-4 h-4 w-32" />
+              <Skeleton className="mt-2 h-3 w-full" />
+            </Card>
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-5">
+      {header}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sources.map((source) => {
           const Icon = SOURCE_ICON[source.key];

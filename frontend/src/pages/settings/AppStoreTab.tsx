@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import type { AxiosError } from 'axios';
 import {
   listAppStoreIntegrations,
@@ -36,14 +36,20 @@ const META_ERROR_MESSAGES: Record<string, string> = {
 
 function MetaAppCard() {
   const queryClient = useQueryClient();
-  const { data: config, isLoading } = useQuery({ queryKey: ['meta-app-config'], queryFn: getMetaAppConfig });
+  const {
+    data: config,
+    isLoading,
+    isError,
+    error: configError,
+    refetch: refetchConfig,
+  } = useQuery({ queryKey: ['meta-app-config'], queryFn: getMetaAppConfig });
   const [appId, setAppId] = useState('');
   const [appSecret, setAppSecret] = useState('');
 
   const saveMutation = useMutation({
     mutationFn: () => saveMetaAppConfig({ appId, appSecret }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['meta-app-config'] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['meta-app-config'] });
       toast('Meta app saved', { variant: 'success' });
       setAppSecret('');
     },
@@ -61,10 +67,26 @@ function MetaAppCard() {
     },
   });
 
-  if (isLoading) return <Card className="h-24 animate-pulse" />;
+  if (isLoading) return <Card id="meta-app-card" className="h-24 scroll-mt-4 animate-pulse" />;
+
+  if (isError) {
+    const err = configError as AxiosError<{ error?: string }>;
+    const description = err.response?.data?.error ?? err.message ?? 'Could not reach the server.';
+    return (
+      <Card id="meta-app-card" className="space-y-2 scroll-mt-4 border border-[var(--color-danger)]">
+        <h4 className="font-semibold">Meta App (Facebook / Instagram)</h4>
+        <p className="text-sm text-[var(--color-danger)]">
+          Couldn't load your Meta app status ({err.response?.status ?? 'network error'}): {description}
+        </p>
+        <Button size="sm" variant="secondary" onClick={() => refetchConfig()}>
+          Retry
+        </Button>
+      </Card>
+    );
+  }
 
   return (
-    <Card className="space-y-2">
+    <Card id="meta-app-card" className="space-y-2 scroll-mt-4">
       <div className="flex items-center justify-between">
         <h4 className="font-semibold">Meta App (Facebook / Instagram)</h4>
         {config?.configured && <Badge tone="success">Configured</Badge>}
@@ -197,6 +219,7 @@ function RazorpayCard({ connected }: { connected: boolean }) {
 
 function MetaLeadAdsButton({ appKey, connected }: { appKey: 'facebook_lead_ads' | 'instagram_lead_ads'; connected: boolean }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const connectMutation = useMutation({
     mutationFn: () => getMetaLeadAdsOAuthUrl(appKey),
@@ -204,7 +227,10 @@ function MetaLeadAdsButton({ appKey, connected }: { appKey: 'facebook_lead_ads' 
       window.location.href = url;
     },
     onError: (err: AxiosError<{ error?: string }>) => {
-      toast('Could not start Meta connection', { variant: 'error', description: err.response?.data?.error ?? 'Please try again.' });
+      const description = err.response?.data?.error ?? 'Please try again.';
+      const needsMetaApp = err.response?.status === 400 && description.toLowerCase().includes('meta app');
+      toast('Could not start Meta connection', { variant: 'error', description });
+      if (needsMetaApp) navigate('/settings/app-store#meta-app-card');
     },
   });
 
@@ -237,8 +263,23 @@ function MetaLeadAdsButton({ appKey, connected }: { appKey: 'facebook_lead_ads' 
 export function AppStoreTab() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: integrations, isLoading } = useQuery({ queryKey: ['app-store-integrations'], queryFn: listAppStoreIntegrations });
+
+  useEffect(() => {
+    if (location.hash !== '#meta-app-card') return;
+    // The Meta card doesn't exist in the DOM until the integrations list finishes loading
+    // (a separate query gates the whole page behind a skeleton), so this must re-check once
+    // that finishes instead of only running once on the initial hash change.
+    if (isLoading) return;
+    const el = document.getElementById('meta-app-card');
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('ring-2', 'ring-[var(--color-primary)]');
+    const timer = setTimeout(() => el.classList.remove('ring-2', 'ring-[var(--color-primary)]'), 2500);
+    return () => clearTimeout(timer);
+  }, [location.hash, isLoading]);
 
   useEffect(() => {
     const meta = searchParams.get('meta');

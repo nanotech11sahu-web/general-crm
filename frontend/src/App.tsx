@@ -111,8 +111,8 @@ export default function App() {
               <Route path="stats" element={<StatsPage />} />
               <Route path="leads" element={<LeadsPage />} />
               <Route path="pipeline" element={<PipelinePage />} />
-              <Route path="import" element={<LeadImportPage />} />
             </Route>
+            <Route path="/lead-management/import" element={<LeadImportPage />} />
             <Route path="/lead-management/contacts/:id" element={<ContactProfilePage />} />
 
             <Route path="/lead-generation" element={<LeadGenerationHome />} />

@@ -120,7 +120,7 @@ function CreateTab() {
         variant: 'error',
         description: needsMetaApp ? `${description} Go to Settings > App Store to set it up.` : description,
       });
-      if (needsMetaApp) navigate('/settings/app-store');
+      if (needsMetaApp) navigate('/settings/app-store#meta-app-card');
     },
   });
 
