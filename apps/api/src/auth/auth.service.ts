@@ -4,7 +4,7 @@ import * as argon2 from 'argon2';
 import { createHash, randomBytes } from 'node:crypto';
 import { runAsSystem, runWithTenant, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
 import type { Role } from '@leaddesk/shared';
-import { seedPreset } from '@leaddesk/domain';
+import { BillingService, seedPreset } from '@leaddesk/domain';
 import { AuditService } from '../audit/audit.service';
 import { KEY_SERVICE, SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
 import { DomainError } from '@leaddesk/domain';
@@ -44,6 +44,7 @@ export class AuthService {
     return runWithTenant(tenantId, async () => {
       const m = await this.db.repos.memberships.create({ userId: user._id, role: 'owner' });
       await seedPreset(this.db.repos, i.industryPreset ?? 'generic');
+      await new BillingService(this.db).ensureTrial(); // 14 days, everything unlocked
       await this.audit.record({ action: 'tenant.signup', entity: 'tenant', entityId: tenantId });
       return this.issue(String(user._id), tenantId, 'owner', String(m._id));
     });
@@ -188,6 +189,7 @@ export class AuthService {
   /** Caller must already be inside the tenant context (interceptor). */
   async invite(by: { userId: string; role: Role }, i: { email: string; role: Exclude<Role, 'owner'>; teamId?: string }, tenantId: string) {
     if (ROLE_RANK[i.role] >= ROLE_RANK[by.role]) throw new ForbiddenException('Cannot invite a role at or above your own');
+    await new BillingService(this.db).assertSeatAvailable(); // open invitations hold a seat
     const token = newToken(tenantId);
     await this.db.repos.invitations.create({
       email: i.email.toLowerCase(), role: i.role, teamId: i.teamId, tokenHash: sha256(token),

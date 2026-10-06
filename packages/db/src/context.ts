@@ -33,6 +33,8 @@ export const SYSTEM_OPERATIONS = [
   'pulse.sweep',
   'ai.sweep',
   'ops.stats',
+  'billing.webhook',
+  'platform.operator',
   'ops.sweep',
   'scheduler.listConnections',
   'auth.findUserByEmail',

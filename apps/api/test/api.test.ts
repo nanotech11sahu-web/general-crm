@@ -20,6 +20,7 @@ beforeAll(async () => {
   rs = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   process.env.MONGO_URL = rs.getUri('api_test');
   process.env.JWT_ACCESS_SECRET = 'test-access-secret-123';
+  Object.assign(process.env, { RAZORPAY_KEY_ID: 'rzp_test_key', RAZORPAY_KEY_SECRET: 'rzp_test_secret', RAZORPAY_WEBHOOK_SECRET: 'rzp_whsec', RAZORPAY_PLAN_STARTER: 'plan_S', RAZORPAY_PLAN_GROWTH: 'plan_G', RAZORPAY_PLAN_SCALE: 'plan_X' });
   process.env.RATE_LIMITS = 'off'; // abuse limits are exercised in hardening.test.ts
   process.env.LOCAL_KEK_BASE64 = randomBytes(32).toString('base64');
   Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test', PUBLIC_INGRESS_URL: 'https://hooks.example.test', OBJECT_SIGNING_SECRET: 'test-signing-secret-0123456789', RECORDINGS_DIR: mkdtempSync(join(tmpdir(), 'ld-rec-')) });
@@ -1347,5 +1348,98 @@ describe('onboarding checklist (phase 7e)', () => {
     await request(http).post('/v1/leads').set(auth(o.token)).send({ name: 'First Lead', contacts: [{ value: '9812300555' }] }).expect(201);
     const d = await done(); expect(d).toMatchObject({ source: true, team: true, sla: true, first_lead: true, routing: false, first_call: false });
     const b = (await request(http).get('/v1/onboarding').set(auth(o.token)).expect(200)).body; expect(b).toMatchObject({ done: 4, total: 7, complete: false });
+  });
+});
+
+describe('billing, seats and read-only enforcement (phase 8)', () => {
+  const rz = { calls: [] as any[] };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url);
+    if (u.hostname === 'api.razorpay.com' && u.pathname === '/v1/subscriptions') { const body = JSON.parse(init.body); rz.calls.push(body); return resp(200, { id: `sub_api_${rz.calls.length}`, short_url: `https://rzp.io/i/api${rz.calls.length}` }); }
+    if (u.hostname === 'api.razorpay.com' && /^\/v1\/subscriptions\/[^/]+(\/cancel)?$/.test(u.pathname)) { rz.calls.push({ path: u.pathname, method: init?.method, ...JSON.parse(init.body) }); return resp(200, { id: u.pathname.split('/')[3], status: 'active' }); }
+    return resp(404, {});
+  };
+  let owner: string; let tenantId: string; let agent: string;
+  const invite = (role: string, n: number) => request(http).post('/v1/invitations').set(auth(owner)).send({ email: `bill-${role}${n}@x.io`, role });
+  const expireTrial = async () => {
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db'); const { EntitlementCache } = await import('../src/billing/billing.module');
+    await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.subscriptions.updateOne({}, { $set: { trialEndsAt: new Date(Date.now() - 1000) } }));
+    app.get(EntitlementCache).invalidate(tenantId);
+  };
+  beforeAll(async () => {
+    providerFetch = fx;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'bill-owner@x.io', password: 'correct-horse-9', name: 'Bea', tenantName: 'Bill Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+  });
+
+  it('pricing is public; every new workspace is on a 14-day trial with everything unlocked', async () => {
+    const p = (await request(http).get('/v1/plans').expect(200)).body; expect(p).toMatchObject({ currency: 'INR' }); expect(p.plans.map((x: any) => x.key)).toEqual(['starter', 'growth', 'scale']);
+    const st = (await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body;
+    expect(st).toMatchObject({ status: 'trialing', plan: 'trial', trialDaysLeft: 14, restricted: false });
+    await request(http).get('/v1/billing/status').expect(401);
+    const ov = (await request(http).get('/v1/billing').set(auth(owner)).expect(200)).body; expect(ov).toMatchObject({ seats: 5, paymentsEnabled: true }); expect(ov.plans).toHaveLength(3);
+  });
+
+  it('seats: owner + 4 invitations fill the trial; the next invite is refused with 402 and a clear message; an expired invite frees its seat', async () => {
+    for (let i = 1; i <= 4; i++) await invite('agent', i).expect(201);
+    const r = await invite('agent', 5).expect(402);
+    expect(r.body).toMatchObject({ code: 'seat_limit', details: { seats: 5, used: 5 } }); expect(r.body.message).toContain('Add seats in Billing');
+    const u = (await request(http).get('/v1/billing/usage').set(auth(owner)).expect(200)).body; expect(u).toMatchObject({ seats: { used: 5, members: 1, pendingInvites: 4, limit: 5 }, leads: { created: 0 } });
+    const inv = (await invite('agent', 9).expect(402)); void inv;
+  });
+
+  it('billing screens are admin-only; only the owner can buy; checkout returns the provider link and nothing changes until the webhook confirms', async () => {
+    const acc = await request(http).post('/v1/auth/login').send({ email: 'bill-owner@x.io', password: 'correct-horse-9' }).expect(200); void acc;
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    // make one invitation an accepted agent so we have a non-owner token
+    const db = app.get(TENANT_DB);
+    const pending: any = await runWithTenant(tenantId, () => db.repos.invitations.findOne({ email: 'bill-agent1@x.io' }));
+    void pending;
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'bill-agent1@x.io', role: 'agent' }); void inv; // duplicate pending invite is harmless
+    // accept one of the open invitations through a fresh token: re-issue via DB-less path is not available, so create the agent via the API invite of a freed seat
+    await runWithTenant(tenantId, () => db.repos.invitations.updateMany({}, { $set: { expiresAt: new Date(Date.now() - 1000) } })); // free all seats
+    const i2 = (await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'bill-ag@x.io', role: 'agent' }).expect(201)).body.inviteToken;
+    agent = (await request(http).post(`/v1/invitations/${i2}/accept`).send({ name: 'Ag', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+    await request(http).get('/v1/billing').set(auth(agent)).expect(403); await request(http).get('/v1/billing/status').set(auth(agent)).expect(200);
+    await request(http).post('/v1/billing/checkout').set(auth(agent)).send({ plan: 'growth', seats: 6 }).expect(403);
+    await request(http).post('/v1/billing/checkout').set(auth(owner)).send({ plan: 'trial', seats: 6 }).expect(400);
+    await request(http).post('/v1/billing/checkout').set(auth(owner)).send({ plan: 'growth', seats: 1 }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_seats')); // 2 people already: owner + agent
+    const c = (await request(http).post('/v1/billing/checkout').set(auth(owner)).send({ plan: 'growth', seats: 6 }).expect(201)).body;
+    expect(c.url).toMatch(/^https:\/\/rzp\.io\/i\/api/); expect(rz.calls[0]).toMatchObject({ plan_id: 'plan_G', quantity: 6, notes: { tenant_id: tenantId } });
+    expect((await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body).toMatchObject({ status: 'trialing', plan: 'trial' }); // not paid yet
+  });
+
+  it('when the trial ends the workspace is read-only (402 on writes), but reads, export, security and billing keep working; paying restores it', async () => {
+    await expireTrial();
+    const st = (await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body; expect(st).toMatchObject({ status: 'expired', restricted: true }); expect(st.reason).toContain('trial has ended');
+    const blocked = await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Nope', contacts: [{ value: '9812300777' }] }).expect(402);
+    expect(blocked.body).toMatchObject({ code: 'subscription_required', details: { status: 'expired' } });
+    await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'late@x.io', role: 'agent' }).expect(402);
+    await request(http).get('/v1/leads').set(auth(owner)).expect(200); await request(http).get('/v1/do/queue').set(auth(agent)).expect(200); await request(http).get('/v1/pulse/kpis').set(auth(owner)).expect(200); // reading is never taken away
+    expect((await request(http).get('/v1/tenant/export').set(auth(owner)).expect(200)).text).toContain('"type":"manifest"'); // their data is theirs
+    await request(http).post('/v1/auth/logout-all').set(auth(agent)).expect(200); // account security still works
+    await request(http).post('/v1/billing/checkout').set(auth(owner)).send({ plan: 'growth', seats: 6 }).expect(201); // and so does paying
+
+    // the provider confirms payment (what the signed webhook does): writes work again
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db'); const { BillingService } = await import('@leaddesk/domain'); const { EntitlementCache } = await import('../src/billing/billing.module');
+    const db = app.get(TENANT_DB); const sub: any = await runWithTenant(tenantId, () => db.repos.subscriptions.findOne({}));
+    await runWithTenant(tenantId, () => new BillingService(db).applyProviderEvent({ provider: 'razorpay', eventId: 'e1', kind: 'activated', providerSubscriptionId: sub.providerSubscriptionId, plan: 'growth', seats: 6, periodEnd: new Date(Date.now() + 30 * 86400_000) }));
+    app.get(EntitlementCache).invalidate(tenantId);
+    expect((await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body).toMatchObject({ status: 'active', plan: 'growth', restricted: false });
+    await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Back In Business', contacts: [{ value: '9812300778' }] }).expect(201);
+    expect((await request(http).get('/v1/billing').set(auth(owner)).expect(200)).body).toMatchObject({ seats: 6, plan: 'growth' });
+    await request(http).post('/v1/billing/seats').set(auth(owner)).send({ seats: 1 }).expect(422); // fewer than the people on the team
+    const cancelled = (await request(http).post('/v1/billing/cancel').set(auth(owner)).expect(201)).body; expect(cancelled).toMatchObject({ cancelAtPeriodEnd: true, restricted: false }); expect(rz.calls.at(-1)).toMatchObject({ method: 'POST', cancel_at_cycle_end: 1 });
+  });
+
+  it('plan limits: cloud calling needs a plan that includes it; another workspace is unaffected', async () => {
+    const o2 = await signup('bill-other');
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db'); const { EntitlementCache } = await import('../src/billing/billing.module');
+    await request(http).get('/v1/billing/status').set(auth(o2.token)).expect(200);
+    await runWithTenant(o2.tenantId, () => app.get(TENANT_DB).repos.subscriptions.updateOne({}, { $set: { plan: 'starter', status: 'active', seats: 5, trialEndsAt: null } })); app.get(EntitlementCache).invalidate(o2.tenantId);
+    await request(http).post('/v1/connections').set(auth(o2.token)).send({ provider: 'telephony-exotel', name: 'Exotel', credentials: { apiKey: 'k', apiToken: 't' }, config: { accountSid: 'acme1', callerId: '+918000000000' } }).expect(402).expect((r) => expect(r.body).toMatchObject({ code: 'plan_limit', details: { feature: 'cloudTelephony' } }));
+    await request(http).post('/v1/connections').set(auth(o2.token)).send({ provider: 'website-webhook', name: 'Site' }).expect(201);
+    expect((await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body.plan).toBe('growth'); // the first workspace is untouched
   });
 });

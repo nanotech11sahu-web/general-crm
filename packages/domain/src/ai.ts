@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AiRequest, ConnectorRegistry } from '@leaddesk/connectors-core';
 import type { KeyService } from '@leaddesk/crypto';
 import { getContext, requireTenantId, runWithTenant, toObjectId, type SystemOps, type TenantDb } from '@leaddesk/db';
+import { BillingService } from './billing';
 import { ConnectionService } from './connections';
 import { DoService, validateNextAction } from './do';
 import { DomainError, notFound } from './errors';
@@ -81,6 +82,7 @@ export class AiService {
   async updateSettings(p: Partial<Pick<AiSettings, 'enabled' | 'killSwitch' | 'dailyCap'>> & { features?: Partial<Record<AiFeature, number>> }) {
     const set: Record<string, unknown> = {};
     if (typeof p.enabled === 'boolean') {
+      if (p.enabled) await new BillingService(this.db, () => this.now()).assertFeature('ai'); // plan must include AI
       if (p.enabled && !(await this.connection(false))) throw new DomainError('no_ai_connection', 'Connect an AI provider (Groq) before switching AI on');
       set['settings.ai.enabled'] = p.enabled;
     }
@@ -367,6 +369,7 @@ export class AiService {
   async assessPending(limit = 10): Promise<{ assessed: number; skipped: number }> {
     const s = await this.settings();
     if (!s.enabled || s.killSwitch || s.features.assessment === 0) return { assessed: 0, skipped: 0 };
+    if (await new BillingService(this.db, () => this.now()).restricted()) return { assessed: 0, skipped: 0 }; // expired workspaces are read-only: no background AI spend
     const since = new Date(this.now().getTime() - 24 * 3600_000);
     const fresh: any[] = await this.r.leads.find({ deletedAt: null, createdAt: { $gte: since }, 'ai.assessedAt': { $exists: false } }, { sort: { createdAt: 1 }, limit });
     let assessed = 0, skipped = 0;

@@ -9,6 +9,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/auth.types';
 import { CurrentUser, RequirePermission } from '../common/guards';
 import { DoModule, OBJECT_STORE } from '../do/do.module';
+import { AllowRestricted } from '../billing/billing.module';
 
 class EraseDto { @IsOptional() @IsString() @MaxLength(200) reason?: string }
 class PasswordDto { @IsString() @MaxLength(128) password!: string }
@@ -27,6 +28,7 @@ export class PrivacyFacade {
 }
 
 /** DPDP / GDPR tooling: subject access, erasure, workspace export, retention and deletion. All of it is audited. */
+@AllowRestricted() // legal data rights and leaving the product must work on a read-only workspace
 @Controller('v1')
 export class PrivacyController {
   constructor(private readonly f: PrivacyFacade) {}

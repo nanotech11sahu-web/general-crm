@@ -2,6 +2,7 @@ import type { ConnectorRegistry } from '@leaddesk/connectors-core';
 import type { KeyService } from '@leaddesk/crypto';
 import { requireTenantId, runWithTenant, toObjectId, type SystemOps, type TenantDb } from '@leaddesk/db';
 import { CadenceEnroller, type FirstTouchSettings, type StepInput, type StopOn, type StopReason } from './cadence-enroll';
+import { BillingService } from './billing';
 import { DoService } from './do';
 import { DomainError, notFound } from './errors';
 import { MessagingService } from './messaging';
@@ -110,6 +111,7 @@ export class CadenceService extends CadenceEnroller {
   async runDue(enrollmentId: string): Promise<'sent' | 'task' | 'deferred' | 'skipped' | 'stopped' | 'idle'> {
     const e: any = await this.r.enrollments.findOne({ _id: enrollmentId, state: 'active', nextRunAt: { $lte: this.now() } });
     if (!e) return 'idle';
+    if (await new BillingService(this.db, this.now).restricted()) return 'idle'; // read-only workspace: automation pauses (enrollments wait, nothing is lost)
     const lead: any = await this.r.leads.findOne({ _id: e.leadId });
     const why = lead ? await this.stopReason(e, lead) : 'lead_deleted';
     if (why) { await this.r.enrollments.updateOne({ _id: e._id, state: 'active' }, { $set: { state: 'stopped', stoppedReason: why, nextRunAt: null } }); if (lead) await this.r.activities.create({ leadId: lead._id, type: 'cadence_stopped', payload: { enrollmentId: String(e._id), kind: e.kind, reason: why }, occurredAt: this.now() }); return 'stopped'; }

@@ -11,7 +11,7 @@ function make(conn: Connection, name: string, def: Record<string, any>, o: { glo
 }
 
 /** Collections that are not tenant-owned. */
-export const GLOBAL_COLLECTIONS = ['tenants', 'users'] as const;
+export const GLOBAL_COLLECTIONS = ['tenants', 'users', 'billingevents', 'platformaudits'] as const;
 
 export function buildModels(conn: Connection) {
   const Tenant = make(conn, 'Tenant', {
@@ -350,6 +350,40 @@ export function buildModels(conn: Connection) {
     hash: { type: String, required: true },
     reason: String,
   });
+  /** One per workspace (spec: subscriptions(tenant, plan, seats, status)). Authoritative for what the workspace may do. */
+  const Subscription = make(conn, 'Subscription', {
+    plan: { type: String, enum: ['trial', 'starter', 'growth', 'scale'], required: true },
+    seats: { type: Number, required: true },
+    status: { type: String, enum: ['trialing', 'active', 'past_due', 'canceled', 'expired'], required: true },
+    trialEndsAt: Date,
+    currentPeriodEnd: Date,
+    pastDueSince: Date,
+    cancelAtPeriodEnd: { type: Boolean, default: false },
+    provider: String, // 'razorpay' | 'manual'
+    providerSubscriptionId: String,
+    pending: Schema.Types.Mixed, // checkout started, not yet confirmed by the provider: { plan, seats, providerSubscriptionId, url, createdAt }
+    note: String,
+  });
+  /** Provider webhooks arrive before we know the tenant, so this is global; idempotent on the provider's event id. */
+  const BillingEvent = make(conn, 'BillingEvent', {
+    provider: { type: String, required: true },
+    eventId: { type: String, required: true },
+    type: String,
+    tenantId: Schema.Types.ObjectId,
+    payload: Schema.Types.Mixed,
+    status: { type: String, enum: ['received', 'done', 'failed', 'ignored'], default: 'received' },
+    attempts: { type: Number, default: 0 },
+    error: String,
+    processedAt: Date,
+  }, { global: true });
+  /** Operator (support) actions on workspaces. Global and append-only by convention. */
+  const PlatformAudit = make(conn, 'PlatformAudit', {
+    action: { type: String, required: true },
+    tenantId: Schema.Types.ObjectId,
+    meta: Schema.Types.Mixed,
+    ip: String,
+    at: { type: Date, default: Date.now },
+  }, { global: true, timestamps: false });
   const Cadence = make(conn, 'Cadence', {
     name: { type: String, required: true },
     active: { type: Boolean, default: true },
@@ -464,7 +498,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Suppression, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, PlatformAudit, Suppression, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

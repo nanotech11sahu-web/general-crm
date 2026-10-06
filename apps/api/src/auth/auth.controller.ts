@@ -5,6 +5,7 @@ import { AuthService, Tokens } from './auth.service';
 import { CurrentUser, Public, RequirePermission } from '../common/guards';
 import { REFRESH_COOKIE } from '../common/constants';
 import { RateLimit } from '../hardening/hardening.module';
+import { AllowRestricted } from '../billing/billing.module';
 import type { AuthUser } from '../common/auth.types';
 
 class SignupDto {
@@ -62,11 +63,11 @@ export class AuthController {
   }
 
   /** Two-factor (TOTP). Setup returns the secret once; enabling needs a valid code and returns single-use recovery codes. */
-  @Post('auth/2fa/setup') totpSetup(@CurrentUser() u: AuthUser) { return this.auth.totpSetup(u.userId); }
-  @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
-  @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
-  @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
-  @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @AllowRestricted() @Post('auth/2fa/setup') totpSetup(@CurrentUser() u: AuthUser) { return this.auth.totpSetup(u.userId); }
+  @AllowRestricted() @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
+  @AllowRestricted() @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
+  @AllowRestricted() @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @AllowRestricted() @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
 
   @Get('me')
   me(@CurrentUser() u: AuthUser) { return u; }

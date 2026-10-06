@@ -66,6 +66,7 @@ export function createRepositories(m: Models) {
     templates: new TenantScopedRepository(m.MessageTemplate),
     pulseDaily: new TenantScopedRepository(m.PulseDaily),
     suppressions: new TenantScopedRepository(m.Suppression),
+    subscriptions: new TenantScopedRepository(m.Subscription),
     aiSuggestions: new TenantScopedRepository(m.AiSuggestion),
     aiUsage: new TenantScopedRepository(m.AiUsage),
     cadences: new TenantScopedRepository(m.Cadence),
@@ -109,6 +110,25 @@ export function createSystemOps(m: Models) {
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.phoneNumberId': phoneNumberId, status: { $ne: 'revoked' } }).lean().exec()),
     resolveConnectionsByWaba: (provider: string, wabaId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.wabaId': wabaId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** Billing: which workspace owns a provider subscription (webhooks that carry no tenant note). */
+    tenantByProviderSubscription: (id: string) =>
+      runAsSystem('billing.webhook', async () => { const s: any = await m.Subscription.findOne({ providerSubscriptionId: id }, { tenantId: 1 }).lean().exec(); return s ? String(s.tenantId) : null; }),
+    /** Billing events: idempotent insert (returns the stored row and whether it is new), pending list, outcome. */
+    recordBillingEvent: (provider: string, eventId: string, type: string, payload: unknown) =>
+      runAsSystem('billing.webhook', async () => { try { const e = await m.BillingEvent.create({ provider, eventId, type, payload, status: 'received' }); return { event: e.toObject(), created: true }; } catch (err: any) { if (err?.code === 11000) return { event: await m.BillingEvent.findOne({ provider, eventId }).lean().exec(), created: false }; throw err; } }),
+    pendingBillingEvents: (limit = 25) => runAsSystem('billing.webhook', () => m.BillingEvent.find({ status: { $in: ['received', 'failed'] }, attempts: { $lt: 10 } }).sort({ createdAt: 1 }).limit(limit).lean().exec()),
+    finishBillingEvent: (id: any, status: 'done' | 'failed' | 'ignored', error?: string, tenantId?: string) =>
+      runAsSystem('billing.webhook', () => m.BillingEvent.updateOne({ _id: id }, { $set: { status, error: error ?? null, processedAt: status === 'failed' ? null : new Date(), ...(tenantId ? { tenantId } : {}) }, $inc: { attempts: 1 } }).exec()),
+    /** Platform operator tooling (counts and metadata only). */
+    operatorTenants: (q: { text?: string; status?: string; limit?: number }) =>
+      runAsSystem('platform.operator', async () => {
+        const f: any = {}; if (q.status) f.status = q.status; if (q.text) f.$or = [{ name: { $regex: q.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }, { slug: { $regex: q.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }];
+        return m.Tenant.find(f, { name: 1, slug: 1, plan: 1, status: 1, createdAt: 1, timezone: 1 }).sort({ _id: -1 }).limit(Math.min(q.limit ?? 50, 200)).lean().exec();
+      }),
+    operatorTenant: (id: any) => runAsSystem('platform.operator', () => m.Tenant.findById(id).lean().exec()),
+    operatorSetTenantStatus: (id: any, status: 'active' | 'suspended') => runAsSystem('platform.operator', () => m.Tenant.updateOne({ _id: id, status: { $ne: 'deleted' } }, { $set: { status } }).exec()),
+    operatorAudit: (e: { action: string; tenantId?: any; meta?: unknown; ip?: string }) => runAsSystem('platform.operator', () => m.PlatformAudit.create({ ...e, at: new Date() })),
 
     /** Workspaces whose deletion grace period has ended. */
     deletionsDue: (now: Date) =>

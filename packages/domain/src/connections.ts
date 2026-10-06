@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { openSecret, sealSecret, type KeyService } from '@leaddesk/crypto';
 import type { ConnectorContext, ConnectorRegistry, FieldDef, VerifyResult } from '@leaddesk/connectors-core';
 import { newObjectId, requireTenantId, type TenantDb } from '@leaddesk/db';
+import { BillingService } from './billing';
 import { DomainError, notFound } from './errors';
 
 export type ConnStatus = 'pending' | 'verified' | 'degraded' | 'failing' | 'revoked';
@@ -60,6 +61,7 @@ export class ConnectionService {
 
   async create(i: { provider: string; name: string; credentials?: Record<string, string>; config?: Record<string, unknown> }) {
     const { m, creds, revealed } = this.prepare(i.provider, i.credentials, i.config);
+    await new BillingService(this.db).assertCanConnect(m.category); // plan limits (connections, cloud calling, AI)
     const id = newObjectId();
     const conn: any = await this.r.connections.create({
       _id: id, provider: m.id, category: m.category, name: i.name, publicId: randomBytes(18).toString('base64url'),

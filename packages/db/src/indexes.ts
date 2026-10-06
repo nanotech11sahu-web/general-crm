@@ -112,6 +112,14 @@ export const INDEXES_V2: Idx[] = [
   { collection: 'callsessions', keys: { tenantId: 1, startedAt: -1 }, options: { name: 'v2_calls_tenant_started' } },
 ];
 
+export const INDEXES_V3: Idx[] = [
+  { collection: 'subscriptions', keys: { tenantId: 1 }, options: { name: 'v3_subscriptions_tenant', unique: true } },
+  { collection: 'subscriptions', keys: { providerSubscriptionId: 1 }, options: { name: 'v3_subscriptions_provider', partialFilterExpression: { providerSubscriptionId: { $type: 'string' } } } }, // webhooks resolve a tenant from the provider's id
+  { collection: 'billingevents', keys: { provider: 1, eventId: 1 }, options: { name: 'v3_billing_event_id', unique: true } },
+  { collection: 'billingevents', keys: { status: 1, createdAt: 1 }, options: { name: 'v3_billing_event_pending', partialFilterExpression: { status: { $in: ['received', 'failed'] } } } },
+  { collection: 'platformaudits', keys: { tenantId: 1, at: -1 }, options: { name: 'v3_platform_audit' } },
+];
+
 export const COLLECTIONS = [...new Set(INDEXES.map((i) => i.collection))];
 
 export async function ensureCollections(db: Db) {

@@ -6,7 +6,9 @@ import { leadgenChanges, metaChallenge, splitWhatsAppWebhook, whatsappChallenge 
 import { openSecret, type KeyService } from '@leaddesk/crypto';
 import { runWithTenant, type SystemOps, type TenantDb } from '@leaddesk/db';
 import { KEY_SERVICE, SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
+import { BillingService, type PaymentProvider } from '@leaddesk/domain';
 import { INBOX_QUEUE, type InboxQueue } from './inbox-queue';
+export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
 
 export const REGISTRY = Symbol('REGISTRY');
 
@@ -107,6 +109,27 @@ export class WhatsAppHooksController {
     }
     if (unmatched) this.log.warn(`${unmatched} WhatsApp event(s) for numbers with no connection`);
     return { ok: true, accepted };
+  }
+}
+
+/**
+ * Billing webhooks (we are the merchant, not a tenant). Verify the provider signature on the raw body, store the event once, answer 200,
+ * and apply it right away: it is a single indexed update, and anything that fails stays `failed` for the worker's retry sweep.
+ */
+@Controller('hooks/billing')
+export class BillingHooksController {
+  private readonly log = new Logger('BillingHooks');
+  constructor(@Inject(SYSTEM_OPS) private readonly sys: SystemOps, @Inject(TENANT_DB) private readonly db: TenantDb, @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider | undefined) {}
+  @Post('razorpay') @HttpCode(200)
+  async razorpay(@Req() req: Request & { rawBody?: Buffer }, @Headers() headers: Record<string, string | string[] | undefined>) {
+    if (this.provider?.id !== 'razorpay') throw new NotFoundException();
+    const raw = req.rawBody ?? Buffer.alloc(0);
+    if (!this.provider.verifyWebhook(raw, headers)) { this.log.warn('invalid billing signature'); throw new UnauthorizedException(); }
+    const payload = safeJson(raw) as any;
+    const stored = await this.sys.recordBillingEvent('razorpay', this.provider.eventId(raw, headers), String(payload?.event ?? 'unknown'), payload);
+    if (!stored.created) return { ok: true, duplicate: true };
+    await BillingService.processEvent(this.db, this.sys, this.provider, stored.event);
+    return { ok: true };
   }
 }
 

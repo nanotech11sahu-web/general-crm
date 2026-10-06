@@ -20,7 +20,8 @@
     "ioredis": "^5.4.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "@leaddesk/connectors": "workspace:*"
+    "@leaddesk/connectors": "workspace:*",
+    "@leaddesk/domain": "workspace:*"
   },
   "devDependencies": {
     "@nestjs/testing": "^11.0.0",

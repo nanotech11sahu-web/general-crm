@@ -190,3 +190,10 @@ describe('AiSweeper', () => {
     expect(await new AiSweeper(db, sys, new LocalKeyService(Buffer.alloc(32, 1)), createRegistry({} as any)).run()).toEqual({ assessed: 0 });
   });
 });
+
+describe('billing sweep', () => {
+  it('runs across tenants with nothing pending', async () => {
+    const { BillingService } = await import('@leaddesk/domain');
+    expect(await BillingService.sweepAll(db, sys, undefined, { reminders: true })).toMatchObject({ done: 0 });
+  });
+});

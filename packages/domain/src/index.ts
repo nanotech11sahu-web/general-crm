@@ -20,3 +20,6 @@ export * from './pulse';
 export * from './ai';
 export * from './ops';
 export * from './privacy';
+export * from './plans';
+export * from './payments';
+export * from './billing';

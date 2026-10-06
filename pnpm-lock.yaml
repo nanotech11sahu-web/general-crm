@@ -167,6 +167,9 @@ importers:
       '@leaddesk/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@leaddesk/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@leaddesk/platform':
         specifier: workspace:*
         version: link:../../packages/platform
