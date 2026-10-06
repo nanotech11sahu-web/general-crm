@@ -6,8 +6,8 @@ import { getContext, requireTenantId, runWithContext } from './context';
  * tenantId into filters/pipelines and stamps it on writes. The Mongoose plugin
  * independently enforces the same rules as defence in depth.
  */
-export class TenantScopedRepository<T = any> {
-  constructor(protected readonly model: Model<T>) {}
+export class TenantScopedRepository {
+  constructor(protected readonly model: Model<any>) {}
 
   protected scope(filter: Record<string, any> = {}) {
     const tenantId = new Types.ObjectId(requireTenantId());
@@ -42,13 +42,13 @@ export class TenantScopedRepository<T = any> {
     const tenantId = requireTenantId();
     return this.model.insertMany(docs.map((d) => ({ ...d, tenantId })), this.opts());
   }
-  updateOne(filter: Record<string, any>, update: UpdateQuery<T>, o: { upsert?: boolean } = {}) {
+  updateOne(filter: Record<string, any>, update: UpdateQuery<any>, o: { upsert?: boolean } = {}) {
     return this.model.updateOne(this.scope(filter), update, { ...this.opts(), ...o }).exec();
   }
-  updateMany(filter: Record<string, any>, update: UpdateQuery<T>) {
+  updateMany(filter: Record<string, any>, update: UpdateQuery<any>) {
     return this.model.updateMany(this.scope(filter), update, this.opts()).exec();
   }
-  findOneAndUpdate(filter: Record<string, any>, update: UpdateQuery<T>, o: { new?: boolean; upsert?: boolean; sort?: any } = {}) {
+  findOneAndUpdate(filter: Record<string, any>, update: UpdateQuery<any>, o: { new?: boolean; upsert?: boolean; sort?: any } = {}) {
     return this.model.findOneAndUpdate(this.scope(filter), update, { ...this.opts(), ...o }).lean().exec();
   }
   deleteOne(filter: Record<string, any>) {

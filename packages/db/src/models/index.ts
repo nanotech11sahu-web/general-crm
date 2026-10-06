@@ -4,10 +4,10 @@ import { tenantPlugin } from '../tenant-plugin';
 const ObjectId = Schema.Types.ObjectId;
 const opts = { timestamps: true, minimize: false } as const;
 
-function make<T = any>(conn: Connection, name: string, def: Record<string, any>, o: { global?: boolean; timestamps?: boolean } = {}): Model<T> {
-  const schema = new Schema(def, { ...opts, timestamps: o.timestamps ?? true, autoIndex: false, autoCreate: false });
-  schema.plugin(tenantPlugin, { global: o.global });
-  return conn.model<T>(name, schema);
+function make(conn: Connection, name: string, def: Record<string, any>, o: { global?: boolean; timestamps?: boolean } = {}): Model<any> {
+  const schema: Schema<any> = new Schema<any>(def as any, { ...opts, timestamps: o.timestamps ?? true, autoIndex: false, autoCreate: false } as any);
+  schema.plugin(tenantPlugin as any, { global: o.global });
+  return conn.model<any>(name, schema) as Model<any>;
 }
 
 /** Collections that are not tenant-owned. */
