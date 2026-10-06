@@ -122,6 +122,8 @@ export default function Today() {
         <h1>Today</h1>
         <div className="row" style={{ alignItems: 'center' }}>
           <span className={`pill${live ? ' live' : ''}`} aria-label={live ? 'Live updates on' : 'Live updates off'}>{live ? '● live' : '○ offline'}</span>
+          <button onClick={() => router.push('/leads')} style={{ minHeight: 36, padding: '0 12px' }}>Leads</button>
+          {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/admin')} style={{ minHeight: 36, padding: '0 12px' }}>Admin</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/billing')} style={{ minHeight: 36, padding: '0 12px' }}>Billing</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/settings')} style={{ minHeight: 36, padding: '0 12px' }}>Settings</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ops')} style={{ minHeight: 36, padding: '0 12px' }}>Health</button>}

@@ -5,7 +5,8 @@ export default {
   reactStrictMode: true,
   poweredByHeader: false,
   eslint: { ignoreDuringBuilds: true }, // linting runs once at the repo root
-  async rewrites() { return [{ source: '/v1/:path*', destination: `${API}/v1/:path*` }]; },
+  // The operator console proxies /platform only when deliberately switched on (prefer a separate, IP-restricted deployment).
+  async rewrites() { return [{ source: '/v1/:path*', destination: `${API}/v1/:path*` }, ...(process.env.OPERATOR_CONSOLE === 'on' ? [{ source: '/platform/:path*', destination: `${API}/platform/:path*` }] : [])]; },
   async headers() {
     return [{ source: '/(.*)', headers: [
       { key: 'X-Content-Type-Options', value: 'nosniff' },

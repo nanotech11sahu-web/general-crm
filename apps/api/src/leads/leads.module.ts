@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Inject, Injectable, Module, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Inject, Injectable, Module, Param, Patch, Post, Put, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, MaxLength, MinLength, ValidateNested, ArrayMaxSize, ArrayMinSize } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -48,6 +48,18 @@ class CustomFieldDto {
   @IsString() @MinLength(1) key!: string;
   @IsString() @MinLength(1) label!: string;
   @IsIn(['text', 'number', 'select', 'date', 'boolean']) type!: 'text' | 'number' | 'select' | 'date' | 'boolean';
+  @IsOptional() @IsArray() @IsString({ each: true }) options?: string[];
+  @IsOptional() @IsBoolean() showInList?: boolean;
+  @IsOptional() @IsArray() @IsString({ each: true }) requiredInStatusIds?: string[];
+}
+class StatusPatchDto {
+  @IsOptional() @IsString() @MinLength(1) name?: string;
+  @IsOptional() @IsString() color?: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) requiresFields?: string[];
+}
+class OrderDto { @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) ids!: string[] }
+class CustomFieldPatchDto {
+  @IsOptional() @IsString() @MinLength(1) label?: string;
   @IsOptional() @IsArray() @IsString({ each: true }) options?: string[];
   @IsOptional() @IsBoolean() showInList?: boolean;
   @IsOptional() @IsArray() @IsString({ each: true }) requiredInStatusIds?: string[];
@@ -239,6 +251,47 @@ export class LeadsController {
     const n = await this.f.db.repos.statuses.count();
     return this.f.db.repos.statuses.create({ ...b, requiresFields: b.requiresFields ?? [], position: n });
   }
+
+  @Put('statuses/:id') @RequirePermission('statuses.manage')
+  async updateStatus(@Param('id') id: string, @Body() b: StatusPatchDto) {
+    const set: Record<string, unknown> = {};
+    for (const k of ['name', 'color', 'requiresFields'] as const) if (b[k] !== undefined) set[k] = b[k];
+    if (!Object.keys(set).length) return this.f.db.repos.statuses.findById(id);
+    const r = await this.f.db.repos.statuses.updateOne({ _id: id }, { $set: set });
+    if (r.matchedCount !== 1) throw new DomainError('not_found', 'Status not found', undefined, 404);
+    await this.f.audit.record({ action: 'status.updated', entity: 'status', entityId: id });
+    return this.f.db.repos.statuses.findById(id);
+  }
+
+  /** Reorders the pipeline: the body lists every status id in the wanted order. */
+  @Put('statuses-order') @RequirePermission('statuses.manage')
+  async reorderStatuses(@Body() b: OrderDto) {
+    const all: any[] = await this.f.db.repos.statuses.find({});
+    const ids = new Set(all.map((s) => String(s._id)));
+    if (b.ids.length !== ids.size || b.ids.some((i) => !ids.has(i)) || new Set(b.ids).size !== b.ids.length) throw new DomainError('invalid_order', 'List every status exactly once');
+    for (const [i, id] of b.ids.entries()) await this.f.db.repos.statuses.updateOne({ _id: id }, { $set: { position: i } });
+    await this.f.audit.record({ action: 'status.reordered', entity: 'status' });
+    return this.f.db.repos.statuses.find({}, { sort: { position: 1 } });
+  }
+
+  @Put('lost-reasons/:id') @RequirePermission('statuses.manage')
+  async updateLostReason(@Param('id') id: string, @Body() b: LostReasonDto) {
+    const r = await this.f.db.repos.lostReasons.updateOne({ _id: id }, { $set: { label: b.label } });
+    if (r.matchedCount !== 1) throw new DomainError('not_found', 'Lost reason not found', undefined, 404);
+    return this.f.db.repos.lostReasons.findById(id);
+  }
+
+  @Put('custom-fields/:id') @RequirePermission('statuses.manage')
+  async updateCustomField(@Param('id') id: string, @Body() b: CustomFieldPatchDto) {
+    const set: Record<string, unknown> = {};
+    for (const k of ['label', 'options', 'showInList', 'requiredInStatusIds'] as const) if (b[k] !== undefined) set[k] = b[k]; // key and type are immutable: existing values depend on them
+    const r = await this.f.db.repos.customFields.updateOne({ _id: id }, { $set: set });
+    if (r.matchedCount !== 1) throw new DomainError('not_found', 'Field not found', undefined, 404);
+    return this.f.db.repos.customFields.findById(id);
+  }
+
+  @Delete('custom-fields/:id') @RequirePermission('statuses.manage')
+  async deleteCustomField(@Param('id') id: string) { await this.f.db.repos.customFields.deleteOne({ _id: id }); await this.f.audit.record({ action: 'custom_field.deleted', entity: 'custom_field', entityId: id }); return { ok: true }; }
 
   @Get('lost-reasons') @RequirePermission('leads.read')
   lostReasons() { return this.f.db.repos.lostReasons.find(); }

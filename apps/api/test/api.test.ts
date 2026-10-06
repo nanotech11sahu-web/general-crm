@@ -1518,3 +1518,28 @@ describe('sample data endpoints (phase 8)', () => {
     expect((await request(http).get('/v1/demo-data').set(auth(tok)).expect(200)).body.loaded).toBe(false);
   });
 });
+
+describe('admin configuration endpoints (phase 9)', () => {
+  it('edits statuses, reorders the pipeline, edits fields and manages teams, with permissions enforced', async () => {
+    const o = await signup('cfg-owner'); const T = o.token;
+    const ags = (await request(http).get('/v1/statuses').set(auth(T)).expect(200)).body as any[];
+    const first = ags[0];
+    await request(http).put(`/v1/statuses/${first._id}`).set(auth(T)).send({ name: 'Brand new', requiresFields: [] }).expect(200);
+    const order = ags.map((s) => s._id).reverse();
+    const re = (await request(http).put('/v1/statuses-order').set(auth(T)).send({ ids: order }).expect(200)).body as any[];
+    expect(re.map((s) => s._id)).toEqual(order);
+    await request(http).put('/v1/statuses-order').set(auth(T)).send({ ids: order.slice(1) }).expect(422); // must list every status exactly once
+    const f = (await request(http).post('/v1/custom-fields').set(auth(T)).send({ key: 'plot', label: 'Plot', type: 'text' }).expect(201)).body;
+    await request(http).put(`/v1/custom-fields/${f._id}`).set(auth(T)).send({ label: 'Plot size', key: 'hack', type: 'number' }).expect(400); // unknown properties are rejected
+    const upd = (await request(http).put(`/v1/custom-fields/${f._id}`).set(auth(T)).send({ label: 'Plot size' })).body;
+    expect(upd).toMatchObject({ key: 'plot', type: 'text', label: 'Plot size' }); // key/type are immutable
+    await request(http).delete(`/v1/custom-fields/${f._id}`).set(auth(T)).expect(200);
+    const t = (await request(http).post('/v1/teams').set(auth(T)).send({ name: 'North' }).expect(201)).body;
+    expect((await request(http).get('/v1/teams').set(auth(T)).expect(200)).body).toEqual([expect.objectContaining({ id: t.id, name: 'North', members: 0 })]);
+    await request(http).put(`/v1/teams/${t.id}`).set(auth(T)).send({ name: 'North & East' }).expect(200);
+    await request(http).delete(`/v1/teams/${t.id}`).set(auth(T)).expect(200);
+    expect((await request(http).get('/v1/teams').set(auth(T)).expect(200)).body).toEqual([]);
+    const other = await signup('cfg-other');
+    await request(http).put(`/v1/statuses/${first._id}`).set(auth(other.token)).send({ name: 'Hijack' }).expect(404); // another workspace's status id is invisible
+  });
+});

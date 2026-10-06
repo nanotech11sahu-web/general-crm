@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Inject, Injectable, Module, Param, Post } from '@nestjs/common';
-import { ArrayMaxSize, IsArray, IsDateString, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Body, Controller, Delete, Get, Inject, Injectable, Module, Param, Post, Put } from '@nestjs/common';
+import { ArrayMaxSize, IsArray, IsDateString, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { Patch } from '@nestjs/common';
 import { DomainError, OffboardService } from '@leaddesk/domain';
 import { TENANT_DB } from '@leaddesk/platform';
@@ -65,5 +65,32 @@ export class UsersController {
   offboard(@Param('id') id: string, @Body() b: OffboardDto) { return this.svc.offboard(id, b); }
 }
 
-@Module({ controllers: [UsersController], providers: [UsersService] })
+class TeamDto { @IsString() @MinLength(1) @MaxLength(80) name!: string; @IsOptional() @IsString() leadUserId?: string | null }
+
+/** Teams scope what managers see and feed team-pool routing rules. */
+@Controller('v1/teams')
+export class TeamsController {
+  constructor(private readonly svc: UsersService) {}
+  @Get() @RequirePermission('leads.reassign')
+  async list() {
+    const [teams, ms]: [any[], any[]] = await Promise.all([this.svc.db.repos.teams.find({}, { sort: { name: 1 } }), this.svc.db.repos.memberships.find({ status: 'active' })]);
+    return teams.map((t) => ({ id: String(t._id), name: t.name, leadUserId: t.leadUserId ? String(t.leadUserId) : null, members: ms.filter((m) => String(m.teamId) === String(t._id)).length }));
+  }
+  @Post() @RequirePermission('users.manage')
+  async create(@Body() b: TeamDto) { const t: any = await this.svc.db.repos.teams.create({ name: b.name, ...(b.leadUserId ? { leadUserId: toObjectId(b.leadUserId) } : {}) }); return { id: String(t._id), name: t.name }; }
+  @Put(':id') @RequirePermission('users.manage')
+  async update(@Param('id') id: string, @Body() b: TeamDto) {
+    const r = await this.svc.db.repos.teams.updateOne({ _id: id }, { $set: { name: b.name, leadUserId: b.leadUserId ? toObjectId(b.leadUserId) : null } });
+    if (r.matchedCount !== 1) throw new DomainError('not_found', 'Team not found', undefined, 404);
+    return { ok: true };
+  }
+  @Delete(':id') @RequirePermission('users.manage')
+  async remove(@Param('id') id: string) {
+    await this.svc.db.repos.memberships.updateMany({ teamId: toObjectId(id) }, { $set: { teamId: null } });
+    await this.svc.db.repos.teams.deleteOne({ _id: id }); this.svc.cache.clear();
+    return { ok: true };
+  }
+}
+
+@Module({ controllers: [UsersController, TeamsController], providers: [UsersService] })
 export class UsersModule {}
