@@ -1246,3 +1246,32 @@ describe('AI API (phase 6, Groq fixtures)', () => {
     expect((await request(http).get('/v1/ai/usage').set(auth(o2.token)).expect(200)).body.used).toBe(0);
   });
 });
+
+describe('operations endpoints (phase 7b)', () => {
+  it('healthz/readyz are public and unthrottled; metrics are token-gated and expose counters, histograms and pipeline gauges only', async () => {
+    expect((await request(http).get('/healthz').expect(200)).body.status).toBe('ok');
+    expect((await request(http).get('/readyz').expect(200)).body).toMatchObject({ status: 'ready', checks: { mongo: 'ok' } });
+    await request(http).get('/v1/leads').expect(401); // generates a counted request
+    process.env.METRICS_TOKEN = 'scrape-token-123';
+    try {
+      await request(http).get('/metrics').expect(401);
+      await request(http).get('/metrics').set('Authorization', 'Bearer nope').expect(401);
+      const m = (await request(http).get('/metrics').set('Authorization', 'Bearer scrape-token-123').expect(200));
+      expect(m.headers['content-type']).toContain('text/plain');
+      expect(m.text).toMatch(/leaddesk_http_requests_total\{method="GET",route="\/v1\/leads",status="4xx"\} \d+/);
+      expect(m.text).toContain('leaddesk_http_request_duration_seconds_bucket'); expect(m.text).toContain('leaddesk_inbox_pending'); expect(m.text).toContain('leaddesk_tasks_not_swept'); expect(m.text).toContain('leaddesk_outbox_backlog');
+      expect(m.text).not.toMatch(/@|tenantId|displayName/); // no tenant data or ids in the scrape
+      process.env.NODE_ENV = 'production'; delete process.env.METRICS_TOKEN;
+      await request(http).get('/metrics').expect(404); // no token configured in production => disabled
+    } finally { process.env.NODE_ENV = 'test'; delete process.env.METRICS_TOKEN; }
+  });
+  it('workspace health is admin-only and reports this tenant\'s pipeline', async () => {
+    const o = await signup('ops-owner');
+    const inv = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'ops-agent@x.io', role: 'agent' }).expect(201);
+    const ag = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'A', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+    await request(http).get('/v1/ops/health').set(auth(ag)).expect(403);
+    const h = (await request(http).get('/v1/ops/health').set(auth(o.token)).expect(200)).body;
+    expect(h).toMatchObject({ connections: { total: 0 }, webhooks: { pending: 0, dead: 0 }, outbox: expect.any(Object), alerts: [] });
+    const other = await signup('ops-other'); expect((await request(http).get('/v1/ops/health').set(auth(other.token)).expect(200)).body.connections.total).toBe(0);
+  });
+});

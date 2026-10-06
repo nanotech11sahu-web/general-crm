@@ -1,10 +1,10 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
-import { cors, csrf, requestContext, securityHeaders } from '@leaddesk/platform';
+import { cors, csrf, httpMetrics, requestContext, securityHeaders } from '@leaddesk/platform';
 import { ErrorEnvelopeFilter } from './common/domain-error.filter';
 import { REFRESH_COOKIE } from './common/constants';
-import { LOGGER } from './hardening/hardening.module';
+import { LOGGER, METRICS } from './hardening/hardening.module';
 
 
 /** Everything that makes the HTTP surface safe by default; shared by the real server and the test harness. */
@@ -15,6 +15,7 @@ export function configureApp(app: INestApplication) {
   const origins = (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const own = [process.env.PUBLIC_APP_URL, ...origins].filter(Boolean) as string[];
   app.use(requestContext(app.get(LOGGER, { strict: false })));
+  app.use(httpMetrics(app.get(METRICS, { strict: false })));
   app.use(securityHeaders({ hsts: process.env.NODE_ENV === 'production' }));
   app.use((_req: Request, res: Response, next: NextFunction) => { res.setHeader('Cache-Control', 'no-store'); next(); }); // API responses are per-user: never cached by proxies or the browser
   app.use(cors(origins));

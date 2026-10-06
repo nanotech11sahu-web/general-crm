@@ -1,4 +1,4 @@
-import { All, Controller, ForbiddenException, Get, Headers, HttpCode, Inject, Logger, NotFoundException, Param, Post, Query, Req, Res, UnauthorizedException } from '@nestjs/common';
+import { All, Controller, ForbiddenException, Get, Headers, HttpCode, Inject, Logger, NotFoundException, Param, Post, Query, Req, Res, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { ConnectorRegistry } from '@leaddesk/connectors-core';
@@ -107,6 +107,17 @@ export class WhatsAppHooksController {
     }
     if (unmatched) this.log.warn(`${unmatched} WhatsApp event(s) for numbers with no connection`);
     return { ok: true, accepted };
+  }
+}
+
+/** Liveness/readiness for the load balancer (no tenant data, no auth). */
+@Controller()
+export class HealthController {
+  constructor(@Inject(TENANT_DB) private readonly db: TenantDb) {}
+  @Get('healthz') live() { return { status: 'ok' }; }
+  @Get('readyz') async ready() {
+    try { await Promise.race([this.db.conn.db!.admin().ping(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 2000))]); return { status: 'ready' }; }
+    catch { throw new ServiceUnavailableException({ code: 'not_ready', message: 'Database is down' }); }
   }
 }
 

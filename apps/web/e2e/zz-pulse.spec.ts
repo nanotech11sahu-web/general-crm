@@ -33,3 +33,16 @@ test('agents have no Pulse button, are told Pulse is for managers, and see their
   await page.goto('/pulse');
   await expect(page.getByText('Pulse is for managers and owners.')).toBeVisible();
 });
+
+test('admins see workspace health with the alert rules\' numbers; agents do not', async ({ page }) => {
+  await signIn(page, owner);
+  await page.getByRole('button', { name: 'Health' }).click();
+  await expect(page.getByRole('heading', { name: 'Health' })).toBeVisible();
+  await expect(page.getByTestId('overall')).toBeVisible();
+  await expect(page.getByLabel('Incoming events')).toContainText('waiting');
+  await page.goto('/today'); await page.getByRole('button', { name: 'Sign out' }).click();
+  await signIn(page, agent);
+  await expect(page.getByRole('button', { name: 'Health' })).toHaveCount(0);
+  await page.goto('/ops');
+  await expect(page.getByText('Workspace health is for admins and owners.')).toBeVisible();
+});

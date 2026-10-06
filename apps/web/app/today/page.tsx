@@ -117,6 +117,7 @@ export default function Today() {
         <h1>Today</h1>
         <div className="row" style={{ alignItems: 'center' }}>
           <span className={`pill${live ? ' live' : ''}`} aria-label={live ? 'Live updates on' : 'Live updates off'}>{live ? '● live' : '○ offline'}</span>
+          {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ops')} style={{ minHeight: 36, padding: '0 12px' }}>Health</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ai')} style={{ minHeight: 36, padding: '0 12px' }}>AI</button>}
           {['owner', 'admin', 'manager'].includes(role) && <button onClick={() => router.push('/pulse')} style={{ minHeight: 36, padding: '0 12px' }}>Pulse</button>}
           <button onClick={async () => { await logout(); router.replace('/login'); }} style={{ minHeight: 36, padding: '0 12px' }}>Sign out</button>

@@ -33,6 +33,10 @@ beforeAll(async () => {
 afterAll(async () => { await app?.close(); await rs?.stop(); });
 
 describe('ingress hardening', () => {
+  it('health endpoints answer without auth and without touching tenant data', async () => {
+    expect((await request(http).get('/healthz').expect(200)).body).toEqual({ status: 'ok' });
+    expect((await request(http).get('/readyz').expect(200)).body).toEqual({ status: 'ready' });
+  });
   it('adds security headers and a safe request id to every response', async () => {
     const r = await hook('{}', 'sha256=bad');
     expect(r.status).toBe(401); expect(r.headers['x-content-type-options']).toBe('nosniff'); expect(r.headers['x-powered-by']).toBeUndefined(); expect(r.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);

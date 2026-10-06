@@ -109,6 +109,30 @@ export function createSystemOps(m: Models) {
     resolveConnectionsByWaba: (provider: string, wabaId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.wabaId': wabaId, status: { $ne: 'revoked' } }).lean().exec()),
 
+    /** Tenants for the alert sweep. */
+    activeTenants: () =>
+      runAsSystem('ops.sweep', () => m.Tenant.find({ status: 'active' }, { timezone: 1, name: 1 }).lean().exec()),
+
+    /** Platform-wide health numbers for /metrics (no tenant data, counts and ages only). */
+    platformStats: (now = new Date()) =>
+      runAsSystem('ops.stats', async () => {
+        const pend = { status: { $in: ['received', 'processing', 'failed'] } };
+        const [inboxPending, inboxDead, oldestInbox, outboxBacklog, oldestOutbox, slaClaimLate, tasksUnswept, conns, tenants] = await Promise.all([
+          m.IntegrationInbox.countDocuments(pend), m.IntegrationInbox.countDocuments({ status: 'dead' }),
+          m.IntegrationInbox.findOne(pend, { receivedAt: 1 }).sort({ receivedAt: 1 }).lean().exec(),
+          m.Event.countDocuments({ dispatchedAt: null }), m.Event.findOne({ dispatchedAt: null }, { createdAt: 1 }).sort({ _id: 1 }).lean().exec(),
+          m.Lead.countDocuments({ 'sla.state': 'awaiting_claim', 'sla.claimDueAt': { $lt: new Date(now.getTime() - 120_000) }, deletedAt: null }),
+          m.Task.countDocuments({ status: 'open', dueAt: { $lt: new Date(now.getTime() - 20 * 60_000) } }),
+          m.IntegrationConnection.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]),
+          m.Tenant.countDocuments({ status: 'active' }),
+        ]);
+        const age = (d: any, f: string) => (d?.[f] ? Math.max(0, Math.round((now.getTime() - new Date(d[f]).getTime()) / 1000)) : 0);
+        return {
+          inboxPending, inboxDead, oldestPendingInboxS: age(oldestInbox, 'receivedAt'), outboxBacklog, oldestOutboxS: age(oldestOutbox, 'createdAt'),
+          slaClaimsOverdue: slaClaimLate, tasksUnswept, tenants, connections: Object.fromEntries((conns as any[]).map((c) => [c._id, c.n])) as Record<string, number>,
+        };
+      }),
+
     /** AI sweeper: tenants with AI switched on (settings only; lead work happens inside the tenant context). */
     aiTenants: () =>
       runAsSystem('ai.sweep', () => m.Tenant.find({ status: 'active', 'settings.ai.enabled': true }, { timezone: 1, settings: 1 }).lean().exec()),

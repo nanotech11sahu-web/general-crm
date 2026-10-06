@@ -40,6 +40,7 @@ export const INDEXES: Idx[] = [
   { collection: 'integrationinboxes', keys: { tenantId: 1, connectionId: 1, externalEventId: 1 }, options: { unique: true } },
   { collection: 'integrationinboxes', keys: { tenantId: 1, status: 1, receivedAt: 1 } },
   // raw payload retention: 90 days (configurable later by recreating the index)
+  { collection: 'integrationinboxes', keys: { receivedAt: 1 }, options: { name: 'pending_by_age', partialFilterExpression: { status: { $in: ['received', 'processing', 'failed'] } } } }, // platform health: oldest unprocessed webhook
   { collection: 'integrationinboxes', keys: { receivedAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
   { collection: 'integrationlogs', keys: { tenantId: 1, connectionId: 1, at: -1 } },
   { collection: 'integrationlogs', keys: { at: 1 }, options: { expireAfterSeconds: 30 * 86400 } },

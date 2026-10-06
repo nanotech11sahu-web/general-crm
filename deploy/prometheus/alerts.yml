@@ -1,0 +1,53 @@
+# Prometheus alert rules for LeadDesk. Scrape api (:3000/metrics) and worker (:9464/metrics) with the bearer METRICS_TOKEN.
+groups:
+  - name: leaddesk-pipeline
+    rules:
+      - alert: LeadDeskIngestLag
+        expr: leaddesk_inbox_oldest_pending_seconds > 300
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Webhook events have waited over 5 minutes to be processed", runbook: "docs/runbook.md#ingest-lag" }
+      - alert: LeadDeskDeadLetters
+        expr: increase(leaddesk_inbox_dead[1h]) > 0
+        labels: { severity: warning }
+        annotations: { summary: "Webhook events exhausted their retries (dead-letter growing)", runbook: "docs/runbook.md#dead-letters" }
+      - alert: LeadDeskQueueFailedGrowing
+        expr: sum by (queue) (increase(leaddesk_queue_jobs{state="failed"}[30m])) > 20
+        labels: { severity: warning }
+        annotations: { summary: "BullMQ queue {{ $labels.queue }} accumulating failed jobs", runbook: "docs/runbook.md#queues" }
+      - alert: LeadDeskSlaTimersLate
+        expr: leaddesk_sla_claim_timers_overdue > 0 or leaddesk_tasks_not_swept > 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "SLA / task timers are not being processed. Is the worker down?", runbook: "docs/runbook.md#timers" }
+      - alert: LeadDeskOutboxBacklog
+        expr: leaddesk_outbox_oldest_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Outbox events are not being dispatched", runbook: "docs/runbook.md#outbox" }
+      - alert: LeadDeskSweepStale
+        expr: time() - leaddesk_job_last_success_timestamp_seconds{job=~"sla|do|cadence"} > 300
+        labels: { severity: critical }
+        annotations: { summary: "Sweep {{ $labels.job }} has not succeeded for 5 minutes", runbook: "docs/runbook.md#timers" }
+      - alert: LeadDeskConnectionsFailing
+        expr: leaddesk_connections{status=~"failing|revoked"} > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations: { summary: "Customer connections are failing or revoked (leads may be silently missing)", runbook: "docs/runbook.md#connections" }
+  - name: leaddesk-api
+    rules:
+      - alert: LeadDeskApiErrorRate
+        expr: sum(rate(leaddesk_http_requests_total{status="5xx"}[5m])) / sum(rate(leaddesk_http_requests_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "More than 2% of API requests are failing with 5xx" }
+      - alert: LeadDeskApiSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(leaddesk_http_request_duration_seconds_bucket[5m]))) > 0.3
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "API p95 latency above the 300 ms budget" }
+      - alert: LeadDeskNotReady
+        expr: probe_success{job="leaddesk-readyz"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "readyz failing: MongoDB or Redis unreachable" }

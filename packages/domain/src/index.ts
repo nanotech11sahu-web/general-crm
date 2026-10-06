@@ -18,3 +18,4 @@ export * from './telephony';
 export * from './cadence';
 export * from './pulse';
 export * from './ai';
+export * from './ops';

@@ -14,12 +14,18 @@ import { SlaSweeper } from './sla-sweeper';
 import { CadenceSweeper } from './cadence-sweeper';
 import { PulseSweeper } from './pulse-sweeper';
 import { AiSweeper } from './ai-sweeper';
+import { OpsSweeper } from './ops-sweeper';
+import { instrument, startMetricsServer, workerLogger } from './observability';
+import { Metrics, validateEnv } from '@leaddesk/platform';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
 class WorkerModule {}
 
 async function bootstrap() {
+  const problems = validateEnv(process.env);
+  if (problems.length) { for (const p of problems) console.error(`config: ${p}`); throw new Error('Refusing to start with an unsafe configuration'); }
+  const metrics = new Metrics(); const log = workerLogger();
   const app = await NestFactory.createApplicationContext(WorkerModule);
   const redisUrl = process.env.REDIS_URL;
   if (!redisUrl) throw new Error('REDIS_URL is required');
@@ -51,35 +57,21 @@ async function bootstrap() {
   const sweepWorker = new Worker('integrity-sweep', async (job) => scheduler.sweep(sweeps.find((x) => x[0] === job.name)![2]), { connection, concurrency: 1 });
   sweepWorker.on('failed', (job, err) => console.error('sweep failed', job?.name, err.message));
 
-  const doSweeper = new DoSweeper(db, sys);
-  const doQueue = new Queue('do-sweep', { connection });
-  await doQueue.upsertJobScheduler('do-sweep', { pattern: '* * * * *' }, { name: 'do.sweep', data: {} });
-  const doWorker = new Worker('do-sweep', async () => doSweeper.run(), { connection, concurrency: 1 });
-  doWorker.on('failed', (job, err) => console.error('do sweep failed', err.message));
-
-  const slaSweeper = new SlaSweeper(db, sys);
-  const slaQueue = new Queue('sla-sweep', { connection });
-  await slaQueue.upsertJobScheduler('sla-sweep', { every: 30_000 }, { name: 'sla.sweep', data: {} });
-  const slaWorker = new Worker('sla-sweep', async () => slaSweeper.run(), { connection, concurrency: 1 });
-  slaWorker.on('failed', (job, err) => console.error('sla sweep failed', err.message));
-
-  const cadenceSweeper = new CadenceSweeper(db, sys, app.get(KEY_SERVICE), registry);
-  const cadenceQueue = new Queue('cadence-sweep', { connection });
-  await cadenceQueue.upsertJobScheduler('cadence-sweep', { every: 30_000 }, { name: 'cadence.sweep', data: {} });
-  const cadenceWorker = new Worker('cadence-sweep', async () => cadenceSweeper.run(), { connection, concurrency: 1 });
-  cadenceWorker.on('failed', (job, err) => console.error('cadence sweep failed', err.message));
-
-  const pulseSweeper = new PulseSweeper(db, sys);
-  const pulseQueue = new Queue('pulse-sweep', { connection });
-  await pulseQueue.upsertJobScheduler('pulse-sweep', { pattern: '5 * * * *' }, { name: 'pulse.sweep', data: {} });
-  const pulseWorker = new Worker('pulse-sweep', async () => pulseSweeper.run(), { connection, concurrency: 1 });
-  pulseWorker.on('failed', (job, err) => console.error('pulse sweep failed', err.message));
-
-  const aiSweeper = new AiSweeper(db, sys, app.get(KEY_SERVICE), registry);
-  const aiQueue = new Queue('ai-sweep', { connection });
-  await aiQueue.upsertJobScheduler('ai-sweep', { every: 60_000 }, { name: 'ai.assess', data: {} });
-  const aiWorker = new Worker('ai-sweep', async () => aiSweeper.run(), { connection, concurrency: 1 });
-  aiWorker.on('failed', (job, err) => console.error('ai sweep failed', err.message));
+  // every periodic sweep: one queue, one scheduler, one instrumented worker (duration/last-success/failure metrics)
+  const closers: (() => Promise<unknown>)[] = [];
+  const queues: Queue[] = [];
+  const periodic = async (name: string, repeat: { every: number } | { pattern: string }, run: () => Promise<unknown>) => {
+    const q = new Queue(`${name}-sweep`, { connection }); queues.push(q);
+    await q.upsertJobScheduler(`${name}-sweep`, repeat as any, { name: `${name}.sweep`, data: {} });
+    const w = new Worker(`${name}-sweep`, instrument(metrics, log, name, run), { connection, concurrency: 1 });
+    w.on('failed', (_job, err) => console.error(`${name} sweep failed`, err.message)); closers.push(() => w.close());
+  };
+  await periodic('do', { pattern: '* * * * *' }, () => new DoSweeper(db, sys).run());
+  await periodic('sla', { every: 30_000 }, () => new SlaSweeper(db, sys).run());
+  await periodic('cadence', { every: 30_000 }, () => new CadenceSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
+  await periodic('pulse', { pattern: '5 * * * *' }, () => new PulseSweeper(db, sys).run());
+  await periodic('ai', { every: 60_000 }, () => new AiSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
+  await periodic('ops', { every: 300_000 }, () => new OpsSweeper(db, sys).run());
 
   const events = new Queue('events', { connection });
   const dispatcher = new OutboxDispatcher(sys, {
@@ -87,7 +79,17 @@ async function bootstrap() {
   });
   dispatcher.start();
 
-  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await slaWorker.close(); await cadenceWorker.close(); await pulseWorker.close(); await aiWorker.close(); await app.close(); process.exit(0); };
+  // queue depth + dead-letter size as scrape-time gauges
+  const watched: [string, Queue][] = [['inbox', new Queue('inbox', { connection })], ['import', new Queue('import', { connection })], ['integrity', integrityQueue], ['events', events], ...queues.map((q) => [q.name, q] as [string, Queue])];
+  metrics.collect(async () => { for (const [n, q] of watched) { const c = await q.getJobCounts('waiting', 'active', 'delayed', 'failed'); for (const [state, v] of Object.entries(c)) metrics.gauge('leaddesk_queue_jobs', 'BullMQ jobs by queue and state (failed = dead-letter)', v, { queue: n, state }); } });
+  metrics.collect(() => { metrics.gauge('process_uptime_seconds', 'Process uptime', process.uptime()); metrics.gauge('process_resident_memory_bytes', 'Resident memory', process.memoryUsage().rss); });
+  const srv = startMetricsServer(Number(process.env.WORKER_METRICS_PORT ?? 9464), metrics, async () => (await connection.ping()) === 'PONG');
+
+  const shutdown = async () => {
+    log.info('shutting down'); srv.close(); dispatcher.stop();
+    await Promise.allSettled([inboxWorker.close(), importWorker.close(), integrityWorker.close(), sweepWorker.close(), ...closers.map((c) => c())]); // let in-flight jobs finish
+    await app.close(); process.exit(0);
+  };
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 }
 bootstrap();
