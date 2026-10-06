@@ -143,6 +143,6 @@ export class RecordingsController {
   imports: [LeadsModule, ConnectionsModule],
   controllers: [DoController, RecordingsController],
   providers: [DoFacade, { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() }],
-  exports: [DoFacade],
+  exports: [DoFacade, OBJECT_STORE],
 })
 export class DoModule {}

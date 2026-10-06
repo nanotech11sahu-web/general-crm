@@ -65,6 +65,7 @@ export function createRepositories(m: Models) {
     messages: new TenantScopedRepository(m.Message),
     templates: new TenantScopedRepository(m.MessageTemplate),
     pulseDaily: new TenantScopedRepository(m.PulseDaily),
+    suppressions: new TenantScopedRepository(m.Suppression),
     aiSuggestions: new TenantScopedRepository(m.AiSuggestion),
     aiUsage: new TenantScopedRepository(m.AiUsage),
     cadences: new TenantScopedRepository(m.Cadence),
@@ -108,6 +109,12 @@ export function createSystemOps(m: Models) {
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.phoneNumberId': phoneNumberId, status: { $ne: 'revoked' } }).lean().exec()),
     resolveConnectionsByWaba: (provider: string, wabaId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.wabaId': wabaId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** Workspaces whose deletion grace period has ended. */
+    deletionsDue: (now: Date) =>
+      runAsSystem('ops.sweep', () => m.Tenant.find({ 'settings.deletion.dueAt': { $lte: now }, status: { $ne: 'deleted' } }, { _id: 1, name: 1 }).lean().exec()),
+    /** Remaining active memberships of a user (to know whether a user row can go when a workspace is deleted). */
+    membershipCount: (userId: any) => runAsSystem('auth.listMemberships', () => m.Membership.countDocuments({ userId, status: 'active' }).exec()),
 
     /** Tenants for the alert sweep. */
     activeTenants: () =>

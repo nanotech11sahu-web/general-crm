@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, sep } from 'node:path';
 
 /** Object storage for recordings (and, later, imports/exports). Access is always through short-lived signed URLs. */
@@ -7,6 +7,10 @@ export interface ObjectStore {
   put(key: string, bytes: Buffer, contentType: string): Promise<void>;
   /** Short-lived URL a browser can open without credentials. */
   signedUrl(key: string, ttlSeconds: number): Promise<string>;
+  /** Erasure and retention: remove one object (idempotent). */
+  delete(key: string): Promise<void>;
+  /** Tenant deletion: remove everything under a key prefix (idempotent). */
+  deletePrefix(prefix: string): Promise<void>;
 }
 
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
@@ -30,6 +34,8 @@ export class FsObjectStore implements ObjectStore {
     await writeFile(p, bytes);
     await writeFile(`${p}.type`, contentType);
   }
+  async delete(key: string) { const p = this.path(key); await rm(p, { force: true }); await rm(`${p}.type`, { force: true }); }
+  async deletePrefix(prefix: string) { await rm(this.path(prefix.replace(/\/?$/, '/')).replace(/\/$/, ''), { recursive: true, force: true }); }
   private sign(payload: string) { return createHmac('sha256', this.secret).update(payload).digest('base64url'); }
   async signedUrl(key: string, ttlSeconds: number) {
     const payload = b64(JSON.stringify({ k: key, e: Math.floor(this.now() / 1000) + ttlSeconds }));
@@ -64,6 +70,16 @@ export class S3ObjectStore implements ObjectStore {
     this.presign = pre.getSignedUrl; this.cmds = s3;
   }
   async put(key: string, bytes: Buffer, contentType: string) { await this.init(); await this.client.send(new this.cmds.PutObjectCommand({ Bucket: this.o.bucket, Key: key, Body: bytes, ContentType: contentType, ServerSideEncryption: this.o.endpoint ? undefined : 'AES256' })); }
+  async delete(key: string) { await this.init(); await this.client.send(new this.cmds.DeleteObjectCommand({ Bucket: this.o.bucket, Key: key })); }
+  async deletePrefix(prefix: string) {
+    await this.init(); let token: string | undefined;
+    do {
+      const r = await this.client.send(new this.cmds.ListObjectsV2Command({ Bucket: this.o.bucket, Prefix: prefix, ContinuationToken: token }));
+      const keys = (r.Contents ?? []).map((o: any) => ({ Key: o.Key }));
+      if (keys.length) await this.client.send(new this.cmds.DeleteObjectsCommand({ Bucket: this.o.bucket, Delete: { Objects: keys } }));
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+  }
   async signedUrl(key: string, ttl: number) { await this.init(); return this.presign(this.client, new this.cmds.GetObjectCommand({ Bucket: this.o.bucket, Key: key }), { expiresIn: ttl }); }
 }
 

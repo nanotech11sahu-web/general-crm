@@ -60,6 +60,7 @@ export const INDEXES: Idx[] = [
   { collection: 'aisuggestions', keys: { tenantId: 1, leadId: 1, status: 1, createdAt: -1 } },
   { collection: 'aisuggestions', keys: { tenantId: 1, inputHash: 1, feature: 1 } },
   { collection: 'aiusages', keys: { tenantId: 1, day: 1, feature: 1 }, options: { unique: true } },
+  { collection: 'suppressions', keys: { tenantId: 1, hash: 1 }, options: { unique: true } },
   { collection: 'cadences', keys: { tenantId: 1, name: 1 }, options: { unique: true } },
   { collection: 'cadenceenrollments', keys: { tenantId: 1, leadId: 1, state: 1 } },
   { collection: 'cadenceenrollments', keys: { tenantId: 1, leadId: 1, dedupeKey: 1 }, options: { unique: true } },

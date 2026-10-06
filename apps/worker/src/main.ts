@@ -15,6 +15,7 @@ import { CadenceSweeper } from './cadence-sweeper';
 import { PulseSweeper } from './pulse-sweeper';
 import { AiSweeper } from './ai-sweeper';
 import { OpsSweeper } from './ops-sweeper';
+import { RetentionService, objectStoreFromEnv } from '@leaddesk/domain';
 import { instrument, startMetricsServer, workerLogger } from './observability';
 import { Metrics, validateEnv } from '@leaddesk/platform';
 import { KEY_SERVICE } from '@leaddesk/platform';
@@ -72,6 +73,8 @@ async function bootstrap() {
   await periodic('pulse', { pattern: '5 * * * *' }, () => new PulseSweeper(db, sys).run());
   await periodic('ai', { every: 60_000 }, () => new AiSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
   await periodic('ops', { every: 300_000 }, () => new OpsSweeper(db, sys).run());
+  const store = objectStoreFromEnv();
+  await periodic('retention', { pattern: '30 3 * * *' }, () => RetentionService.sweepAll(db, sys, store)); // nightly: recordings, soft-deleted leads, workspaces past their deletion grace period
 
   const events = new Queue('events', { connection });
   const dispatcher = new OutboxDispatcher(sys, {

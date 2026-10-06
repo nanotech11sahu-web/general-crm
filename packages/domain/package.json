@@ -14,7 +14,8 @@
     "exceljs": "^4.4.0",
     "@leaddesk/crypto": "workspace:*",
     "@leaddesk/connectors-core": "workspace:*",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "bson": "^6.10.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

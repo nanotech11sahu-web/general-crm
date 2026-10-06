@@ -7,3 +7,4 @@ export * from './db';
 export * from './indexes';
 export * from './validators';
 export * from './migrate';
+export * from './verify';

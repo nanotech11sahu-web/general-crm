@@ -345,6 +345,11 @@ export function buildModels(conn: Connection) {
     tokensIn: { type: Number, default: 0 },
     tokensOut: { type: Number, default: 0 },
   });
+  /** Erasure leaves only a salted hash of the phone so the person is never contacted again by the platform. */
+  const Suppression = make(conn, 'Suppression', {
+    hash: { type: String, required: true },
+    reason: String,
+  });
   const Cadence = make(conn, 'Cadence', {
     name: { type: String, required: true },
     active: { type: Boolean, default: true },
@@ -438,6 +443,7 @@ export function buildModels(conn: Connection) {
     outcomeSkips: { type: Number, default: 0 },
     providerOutcome: String,
     recordingObjectKey: String,
+    recordingExpiredAt: Date, // retention removed the file
   });
 
   /** Single-use OAuth `state` (+ PKCE verifier) bound to tenant/user; consumed on callback, TTL 10 min. */
@@ -458,7 +464,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Suppression, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

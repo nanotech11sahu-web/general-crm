@@ -1275,3 +1275,60 @@ describe('operations endpoints (phase 7b)', () => {
     const other = await signup('ops-other'); expect((await request(http).get('/v1/ops/health').set(auth(other.token)).expect(200)).body.connections.total).toBe(0);
   });
 });
+
+describe('privacy, export and deletion API (phase 7c)', () => {
+  let owner: string; let tenantId: string; let mgr: string; let agent: string; let leadId: string;
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'priv-owner@x.io', password: 'correct-horse-9', name: 'Pri', tenantName: 'Priv Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    const mk = async (email: string, role: string) => { const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role }).expect(201); return (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'N', password: 'agent-pass-123' }).expect(201)).body.accessToken as string; };
+    mgr = await mk('priv-m@x.io', 'manager'); agent = await mk('priv-a@x.io', 'agent');
+    leadId = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Erase Me', contacts: [{ value: '9812344321' }] }).expect(201)).body.leadId;
+    await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'website-webhook', name: 'Site' }).expect(201);
+  });
+
+  it('subject access: managers export a lead (audited); agents cannot', async () => {
+    await request(http).get(`/v1/leads/${leadId}/export`).set(auth(agent)).expect(403);
+    const x = (await request(http).get(`/v1/leads/${leadId}/export`).set(auth(owner)).expect(200)).body;
+    expect(x.lead.displayName).toBe('Erase Me'); expect(x.activities.length).toBeGreaterThan(0);
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    expect(await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.audit.find({ action: 'privacy.lead_exported' }))).toHaveLength(1);
+  });
+
+  it('workspace export: owner only, NDJSON, no credentials', async () => {
+    await request(http).get('/v1/tenant/export').set(auth(mgr)).expect(403);
+    const r = await request(http).get('/v1/tenant/export').set(auth(owner)).expect(200);
+    expect(r.headers['content-type']).toContain('application/x-ndjson'); expect(r.headers['content-disposition']).toContain('leaddesk-export.ndjson');
+    const lines = r.text.trim().split('\n'); expect(JSON.parse(lines[0])).toMatchObject({ type: 'manifest' });
+    expect(lines.some((l) => l.includes('Erase Me'))).toBe(true); expect(lines.some((l) => l.includes('"IntegrationConnection"'))).toBe(true);
+    expect(r.text).not.toMatch(/secretCiphertext|secretWrappedDek|passwordHash|tokenHash/);
+  });
+
+  it('erasure is admin-only, removes the lead for good, and is audited without personal data', async () => {
+    await request(http).delete(`/v1/leads/${leadId}/erase`).set(auth(mgr)).send({}).expect(403);
+    const r = (await request(http).delete(`/v1/leads/${leadId}/erase`).set(auth(owner)).send({ reason: 'data subject request' }).expect(200)).body;
+    expect(r).toMatchObject({ erased: true, counts: { leads: 1 } });
+    await request(http).get(`/v1/leads/${leadId}`).set(auth(owner)).expect(404);
+    await request(http).delete(`/v1/leads/${leadId}/erase`).set(auth(owner)).send({}).expect(404);
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const a: any = await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.audit.findOne({ action: 'privacy.lead_erased' }));
+    expect(JSON.stringify(a)).not.toMatch(/Erase Me|9812344321/);
+  });
+
+  it('retention settings are validated; workspace deletion needs the owner\'s password, has a grace period and can be cancelled', async () => {
+    expect((await request(http).get('/v1/settings/retention').set(auth(owner)).expect(200)).body).toEqual({ recordingDays: 180, softDeletedLeadDays: 30 });
+    await request(http).put('/v1/settings/retention').set(auth(owner)).send({ recordingDays: 3 }).expect(400);
+    await request(http).put('/v1/settings/retention').set(auth(mgr)).send({ recordingDays: 90 }).expect(403);
+    expect((await request(http).put('/v1/settings/retention').set(auth(owner)).send({ recordingDays: 90 }).expect(200)).body.recordingDays).toBe(90);
+
+    await request(http).post('/v1/tenant/deletion').set(auth(mgr)).send({ password: 'x' }).expect(403);
+    await request(http).post('/v1/tenant/deletion').set(auth(owner)).send({ password: 'wrong-password-1' }).expect(401);
+    expect((await request(http).get('/v1/tenant/deletion').set(auth(owner)).expect(200)).body).toEqual({ scheduled: false });
+    const d = (await request(http).post('/v1/tenant/deletion').set(auth(owner)).send({ password: 'correct-horse-9' }).expect(200)).body;
+    expect(new Date(d.dueAt).getTime()).toBeGreaterThan(Date.now() + 13 * 86400_000);
+    expect((await request(http).get('/v1/tenant/deletion').set(auth(owner)).expect(200)).body.dueAt).toBeTruthy();
+    await request(http).get('/v1/leads').set(auth(owner)).expect(200); // still usable during the grace period
+    await request(http).delete('/v1/tenant/deletion').set(auth(owner)).expect(200);
+    expect((await request(http).get('/v1/tenant/deletion').set(auth(owner)).expect(200)).body).toEqual({ scheduled: false });
+  });
+});

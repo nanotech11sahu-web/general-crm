@@ -399,6 +399,9 @@ importers:
       '@leaddesk/shared':
         specifier: workspace:*
         version: link:../shared
+      bson:
+        specifier: ^6.10.0
+        version: 6.10.4
       csv-parse:
         specifier: ^5.6.0
         version: 5.6.0

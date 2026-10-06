@@ -19,3 +19,4 @@ export * from './cadence';
 export * from './pulse';
 export * from './ai';
 export * from './ops';
+export * from './privacy';
