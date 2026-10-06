@@ -31,7 +31,7 @@ export default function Billing() {
   const bar = (used: number, limit: number | null) => limit ? <div style={{ background: 'var(--line)', borderRadius: 6, height: 8 }}><div style={{ width: `${Math.min(100, (used / limit) * 100)}%`, background: used > limit ? '#b91c1c' : 'var(--accent, #2563eb)', height: 8, borderRadius: 6 }} /></div> : null;
   return (
     <main style={{ maxWidth: 900 }}>
-      <div className="bar"><h1>Billing</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
+      <div className="bar"><h1>Billing</h1></div>
       {msg && <p className="err" role="alert">{msg}</p>}
       <section className="card" aria-label="Current plan" data-testid="current-plan"><h2>{o.planName}{o.status === 'trialing' && o.trialDaysLeft !== null ? ` · ${o.trialDaysLeft} day${o.trialDaysLeft === 1 ? '' : 's'} left` : ''}</h2>
         <p className="reason">Status: <strong>{o.status.replace('_', ' ')}</strong>{o.currentPeriodEnd ? ` · ${o.cancelAtPeriodEnd ? 'ends' : 'renews'} ${date(o.currentPeriodEnd)}` : ''}</p>

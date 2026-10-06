@@ -1320,7 +1320,7 @@ describe('privacy, export and deletion API (phase 7c)', () => {
   });
 
   it('retention settings are validated; workspace deletion needs the owner\'s password, has a grace period and can be cancelled', async () => {
-    expect((await request(http).get('/v1/settings/retention').set(auth(owner)).expect(200)).body).toEqual({ recordingDays: 180, softDeletedLeadDays: 30 });
+    expect((await request(http).get('/v1/settings/retention').set(auth(owner)).expect(200)).body).toEqual({ recordingDays: 180, softDeletedLeadDays: 30, importDays: 30 });
     await request(http).put('/v1/settings/retention').set(auth(owner)).send({ recordingDays: 3 }).expect(400);
     await request(http).put('/v1/settings/retention').set(auth(mgr)).send({ recordingDays: 90 }).expect(403);
     expect((await request(http).put('/v1/settings/retention').set(auth(owner)).send({ recordingDays: 90 }).expect(200)).body.recordingDays).toBe(90);

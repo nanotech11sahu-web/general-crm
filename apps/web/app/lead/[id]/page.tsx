@@ -111,7 +111,7 @@ export default function LeadThread() {
     <main>
       <div className="bar">
         <h1>{lead?.displayName ?? 'Lead'}</h1>
-        <button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Back</button>
+        
       </div>
       {lead?.city && <p className="reason">{lead.city}</p>}
       {(lead?.ai?.possibleDuplicates ?? []).length > 0 && <p className="reason" data-testid="dup-note">Possible duplicate: {lead!.ai!.possibleDuplicates!.map((d) => <a key={d.leadId} href={`/lead/${d.leadId}`}>{d.name} ({d.same})</a>)}. Merging stays a manager action.</p>}

@@ -42,7 +42,7 @@ export default function Leads() {
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
-      <div className="bar"><h1>Leads</h1><button onClick={() => router.push('/today')} style={small}>Today</button></div>
+      <div className="bar"><h1>Leads</h1></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       <form className="card" onSubmit={(e) => { e.preventDefault(); void load(f); }} data-testid="filters">
         <input aria-label="Search leads" type="search" placeholder="Search name, phone, email…" value={f.q ?? ''} onChange={(e) => setF({ ...f, q: e.target.value })} />

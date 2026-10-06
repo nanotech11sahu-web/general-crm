@@ -17,7 +17,7 @@ export default function Security() {
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
-      <div className="bar"><h1>Security</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
+      <div className="bar"><h1>Security</h1></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       {required && <p className="err" role="alert" data-testid="2fa-required">Your workspace requires two-factor authentication for your role. Set it up below to continue.</p>}
       <section className="card" data-testid="passkeys"><h2>Passkeys</h2>

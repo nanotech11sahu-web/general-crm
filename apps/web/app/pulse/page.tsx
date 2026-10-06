@@ -48,7 +48,7 @@ export default function Pulse() {
   }
 
   if (!ready) return <main><p className="reason">Loading…</p></main>;
-  if (forbidden) return <main><div className="bar"><h1>Pulse</h1><button onClick={() => router.push('/today')}>Back</button></div><p className="reason" role="alert">Pulse is for managers and owners.</p></main>;
+  if (forbidden) return <main><div className="bar"><h1>Pulse</h1></div><p className="reason" role="alert">Pulse is for managers and owners.</p></main>;
   const m = kpis?.metrics;
   const tiles: [string, string, string, boolean][] = m && kpis ? [
     ['Response time', dur(m.responseMedianS), `${p(m.withinSlaPct)} within SLA`, false], ['Connect rate', p(m.connectRate), `${kpis.counts.connected}/${kpis.counts.calls} calls`, true],
@@ -59,7 +59,7 @@ export default function Pulse() {
 
   return (
     <main style={{ maxWidth: 960 }}>
-      <div className="bar"><h1>Pulse</h1><div className="row"><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div></div>
+      <div className="bar"><h1>Pulse</h1><div className="row"></div></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       <div className="row" role="tablist" aria-label="Period">
         {(['today', '7d', '30d'] as Range[]).map((r) => <button key={r} role="tab" aria-selected={range === r} className={range === r ? 'primary' : ''} onClick={() => setRange(r)}>{r === 'today' ? 'Today' : r === '7d' ? '7 days' : '30 days'}</button>)}

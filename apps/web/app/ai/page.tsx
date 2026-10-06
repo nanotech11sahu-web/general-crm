@@ -32,7 +32,7 @@ export default function AiSettings() {
   if (forbidden) return <main><p className="reason">AI settings are for admins and owners.</p></main>;
   return (
     <main>
-      <div className="bar"><h1>AI</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
+      <div className="bar"><h1>AI</h1></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       <section className="card"><h2>Status</h2>
         <p className="reason">AI is optional and off by default. LeadDesk works fully without it. Connect Groq under Connections first. Lead text is sent to the provider with phone numbers and e-mails masked.</p>

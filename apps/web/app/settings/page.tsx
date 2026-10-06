@@ -48,7 +48,7 @@ export default function Settings() {
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
-      <div className="bar"><h1>Settings</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
+      <div className="bar"><h1>Settings</h1></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       <div className="row" role="tablist" aria-label="Section">
         <button role="tab" aria-selected={tab === 'connections'} className={tab === 'connections' ? 'primary' : ''} onClick={() => setTab('connections')}>Connections</button>

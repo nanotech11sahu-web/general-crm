@@ -66,7 +66,7 @@ test('two-factor from the UI: enrol, get recovery codes once, then sign-in asks 
   await page.getByLabel('6-digit code').fill(totp(totpSecret)); await page.getByRole('button', { name: 'Turn on' }).click();
   await expect(page.getByTestId('recovery')).toContainText(/[0-9a-f]{5}-[0-9a-f]{5}/);
   await page.getByRole('button', { name: 'I saved them' }).click();
-  await page.getByRole('button', { name: 'Today' }).click(); await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('button', { name: 'Today' }).click(); await page.getByRole('button', { name: 'Sign out', exact: true }).click();
 
   await page.goto('/login'); await page.getByLabel('Email').fill(owner.email); await page.getByLabel('Password').fill(owner.password); await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page.getByLabel(/Authenticator code/)).toBeVisible();

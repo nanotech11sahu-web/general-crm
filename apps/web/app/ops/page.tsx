@@ -27,7 +27,7 @@ export default function OpsHealth() {
   const good = h.alerts.length === 0;
   return (
     <main>
-      <div className="bar"><h1>Health</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
+      <div className="bar"><h1>Health</h1></div>
       <section className="card" aria-label="Overall" data-testid="overall"><h2>{good ? '✓ Everything is flowing' : `${h.alerts.length} thing${h.alerts.length === 1 ? '' : 's'} need attention`}</h2>
         {!good && <ul className="list">{h.alerts.map((a) => <li key={a.rule} data-severity={a.severity}><span>{a.severity === 'critical' ? '🔴' : '🟠'} {a.text}</span></li>)}</ul>}
       </section>

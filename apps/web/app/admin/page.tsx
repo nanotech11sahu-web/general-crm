@@ -21,7 +21,7 @@ export default function Admin() {
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
-      <div className="bar"><h1>Admin</h1><span className="row"><button onClick={() => router.push('/settings')} style={{ minHeight: 36, padding: '0 12px' }}>Connections</button><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></span></div>
+      <div className="bar"><h1>Admin</h1><span className="row"><button onClick={() => router.push('/settings')} style={{ minHeight: 36, padding: '0 12px' }}>Connections</button></span></div>
       {msg && <p className="reason" role="status">{msg}</p>}
       <div className="row" role="tablist" aria-label="Admin sections" style={{ marginBottom: 12 }}>
         {TABS.map(([k, l]) => <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'primary' : ''} onClick={() => setTab(k)} style={{ minHeight: 40 }}>{l}</button>)}
