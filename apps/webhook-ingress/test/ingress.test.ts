@@ -138,7 +138,7 @@ describe('meta app-level webhook', () => {
 describe('whatsapp app-level + sms token webhooks', () => {
   const APP_SECRET = 'wa-app-secret';
   const wsign = (b: string) => 'sha256=' + createHmac('sha256', APP_SECRET).update(b).digest('hex');
-  let waTenant: string; let smsConnPublic: string; let smsTenant: string; let kekB: Buffer;
+  let exoPub: string; let waTenant: string; let smsConnPublic: string; let smsTenant: string; let kekB: Buffer;
   const body = (...msgs: any[]) => JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA1', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: 'PN1' }, contacts: [{ wa_id: '919800000001', profile: { name: 'Anita' } }], messages: msgs.filter((m) => m.text), statuses: msgs.filter((m) => m.status) } }, { field: 'message_template_status_update', value: { event: 'APPROVED', message_template_id: 'tp1', message_template_name: 'welcome', message_template_language: 'en' } }] }] });
 
   beforeAll(async () => {
@@ -151,6 +151,9 @@ describe('whatsapp app-level + sms token webhooks', () => {
     const sealed = await sealSecret(new LocalKeyService(Buffer.from(process.env.LOCAL_KEK_BASE64!, 'base64')), { tenantId: smsTenant, connectionId: id }, JSON.stringify({ authKey: 'k'.repeat(20), webhookToken: 'sms-hook-token' }));
     await runWithTenant(smsTenant, () => db.repos.connections.create({ _id: id, provider: 'sms-msg91', category: 'sms', name: 'SMS', publicId: smsConnPublic, status: 'verified', secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef }));
     void kekB;
+    const eid = String(newObjectId()); exoPub = 'exo-pub-' + randomBytes(4).toString('hex');
+    const sealedE = await sealSecret(new LocalKeyService(Buffer.from(process.env.LOCAL_KEK_BASE64!, 'base64')), { tenantId: smsTenant, connectionId: eid }, JSON.stringify({ apiKey: 'k', apiToken: 't', webhookToken: 'exo-hook-token' }));
+    await runWithTenant(smsTenant, () => db.repos.connections.create({ _id: eid, provider: 'telephony-exotel', category: 'voice', name: 'Exotel', publicId: exoPub, status: 'verified', secretCiphertext: sealedE.ciphertext, secretWrappedDek: sealedE.wrappedDek, secretKeyRef: sealedE.keyRef }));
   });
 
   it('routes WhatsApp messages/statuses by phone number and template updates by WABA; idempotent; signed; handshake', async () => {
@@ -191,5 +194,18 @@ describe('whatsapp app-level + sms token webhooks', () => {
     await send('?token=sms-hook-token').expect(200);
     await send('', { 'x-webhook-token': 'sms-hook-token' }).expect(200);
     expect(await runWithTenant(smsTenant, () => db.repos.inbox.count({ externalEventId: 'req-9:1' }))).toBe(1);
+  });
+
+  it('Exotel call callbacks arrive form-encoded: token required, decoded into the stored payload, deduped per call+status', async () => {
+    const path = `/hooks/telephony-exotel/${exoPub}`;
+    const send = (q: string, form: string) => request(http).post(path + q).set('Content-Type', 'application/x-www-form-urlencoded').send(form);
+    const form = 'CallSid=cs-1&Status=completed&ConversationDuration=61';
+    await send('', form).expect(401);
+    await send('?token=wrong', form).expect(401);
+    await send('?token=exo-hook-token', form).expect(200);
+    await send('?token=exo-hook-token', form).expect(200); // redelivery
+    const rows: any[] = await runWithTenant(smsTenant, () => db.repos.inbox.find({ externalEventId: 'cs-1:completed' }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].rawPayload).toMatchObject({ CallSid: 'cs-1', Status: 'completed', ConversationDuration: '61' });
   });
 });

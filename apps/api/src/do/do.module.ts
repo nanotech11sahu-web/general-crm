@@ -1,11 +1,16 @@
-import { Body, Controller, ForbiddenException, Get, Inject, Injectable, Module, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Inject, Injectable, Module, NotFoundException, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { IsDateString, IsIn, IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
-import { DoService } from '@leaddesk/domain';
-import { TENANT_DB } from '@leaddesk/platform';
+import type { ConnectorRegistry } from '@leaddesk/connectors-core';
+import type { KeyService } from '@leaddesk/crypto';
+import { DoService, FsObjectStore, objectStoreFromEnv, TelephonyService, type ObjectStore } from '@leaddesk/domain';
+import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
 import type { TenantDb } from '@leaddesk/db';
 import { can } from '@leaddesk/shared';
 import type { AuthUser } from '../common/auth.types';
-import { CurrentUser, RequirePermission } from '../common/guards';
+import { AuditService } from '../audit/audit.service';
+import { CurrentUser, Public, RequirePermission } from '../common/guards';
+import { ConnectionsModule, REGISTRY } from '../connections/connections.module';
 import { ScopeService } from '../common/scope.service';
 import { LeadsModule } from '../leads/leads.module';
 
@@ -33,10 +38,16 @@ class OutcomeDto {
   @IsOptional() @IsString() lostReasonId?: string;
 }
 
+export const OBJECT_STORE = Symbol('OBJECT_STORE');
+
 @Injectable()
 export class DoFacade {
   readonly svc: DoService;
-  constructor(@Inject(TENANT_DB) readonly db: TenantDb, readonly scope: ScopeService) { this.svc = new DoService(db); }
+  readonly tel: TelephonyService;
+  constructor(
+    @Inject(TENANT_DB) readonly db: TenantDb, readonly scope: ScopeService, readonly audit: AuditService,
+    @Inject(KEY_SERVICE) keys: KeyService, @Inject(REGISTRY) registry: ConnectorRegistry, @Inject(OBJECT_STORE) readonly store: ObjectStore,
+  ) { this.svc = new DoService(db); this.tel = new TelephonyService(db, keys, registry, store, { publicIngressUrl: process.env.PUBLIC_INGRESS_URL }); }
 
   async lead(u: AuthUser, id: string) {
     const l: any = await this.svc.getLead(id);
@@ -85,7 +96,19 @@ export class DoController {
   }
 
   @Post('calls') @RequirePermission('leads.write')
-  async dial(@CurrentUser() u: AuthUser, @Body() b: DialDto) { await this.f.lead(u, b.leadId); return this.f.svc.startCall(b.leadId); }
+  async dial(@CurrentUser() u: AuthUser, @Body() b: DialDto) { await this.f.lead(u, b.leadId); return this.f.tel.dial(b.leadId); }
+
+  /** Call history for a lead (the object key of a recording is never returned). */
+  @Get('calls') @RequirePermission('leads.read')
+  async calls(@CurrentUser() u: AuthUser, @Query('leadId') leadId: string) { await this.f.lead(u, leadId); return this.f.tel.calls(leadId); }
+
+  /** Listening is a managerial permission and every request is audited. Returns a short-lived signed URL. */
+  @Get('calls/:id/recording') @RequirePermission('calls.listen')
+  async recording(@Param('id') id: string) {
+    const r = await this.f.tel.recordingUrl(id);
+    await this.f.audit.record({ action: 'recording.accessed', entity: 'call', entityId: id });
+    return r;
+  }
 
   @Post('calls/:id/end') @RequirePermission('leads.write')
   end(@Param('id') id: string, @Body() b: EndCallDto) { return this.f.svc.endCall(id, b); }
@@ -100,5 +123,26 @@ export class DoController {
   }
 }
 
-@Module({ imports: [LeadsModule], controllers: [DoController], providers: [DoFacade] })
+/** Token IS the authorisation (HMAC-signed, expires in minutes), so no session is needed for the audio element. */
+@Controller('v1/recordings')
+export class RecordingsController {
+  constructor(private readonly f: DoFacade) {}
+  @Public() @Get(':token')
+  async stream(@Param('token') token: string, @Res() res: Response) {
+    const store = this.f.store;
+    const obj = store instanceof FsObjectStore ? await store.open(token) : null;
+    if (!obj) throw new NotFoundException();
+    res.setHeader('content-type', obj.contentType);
+    res.setHeader('cache-control', 'private, no-store');
+    res.setHeader('content-length', String(obj.bytes.length));
+    res.end(obj.bytes);
+  }
+}
+
+@Module({
+  imports: [LeadsModule, ConnectionsModule],
+  controllers: [DoController, RecordingsController],
+  providers: [DoFacade, { provide: OBJECT_STORE, useFactory: () => objectStoreFromEnv() }],
+  exports: [DoFacade],
+})
 export class DoModule {}

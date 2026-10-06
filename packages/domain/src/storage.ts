@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, sep } from 'node:path';
 
@@ -59,7 +59,6 @@ export class S3ObjectStore implements ObjectStore {
   constructor(private readonly o: { bucket: string; endpoint?: string; region?: string; accessKeyId: string; secretAccessKey: string }) {}
   private async init() {
     if (this.client) return;
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const s3 = require('@aws-sdk/client-s3'); const pre = require('@aws-sdk/s3-request-presigner'); // eslint-disable-line @typescript-eslint/no-require-imports
     this.client = new s3.S3Client({ region: this.o.region ?? 'us-east-1', endpoint: this.o.endpoint, forcePathStyle: !!this.o.endpoint, credentials: { accessKeyId: this.o.accessKeyId, secretAccessKey: this.o.secretAccessKey } });
     this.presign = pre.getSignedUrl; this.cmds = s3;
@@ -70,5 +69,9 @@ export class S3ObjectStore implements ObjectStore {
 
 export function objectStoreFromEnv(env: NodeJS.ProcessEnv = process.env): ObjectStore {
   if (env.S3_BUCKET && env.S3_ACCESS_KEY && env.S3_SECRET_KEY) return new S3ObjectStore({ bucket: env.S3_BUCKET, endpoint: env.S3_ENDPOINT, region: env.S3_REGION, accessKeyId: env.S3_ACCESS_KEY, secretAccessKey: env.S3_SECRET_KEY });
-  return new FsObjectStore(env.RECORDINGS_DIR ?? './data/objects', env.OBJECT_SIGNING_SECRET ?? env.JWT_ACCESS_SECRET ?? 'dev-only-signing-secret', (env.PUBLIC_API_URL ?? '').replace(/\/$/, ''));
+  const base = env.OBJECT_SIGNING_SECRET ?? env.JWT_ACCESS_SECRET;
+  if (!base && env.NODE_ENV === 'production') throw new Error('OBJECT_SIGNING_SECRET is required in production');
+  // derive a purpose-bound key so the recordings key is never the raw JWT secret and any non-empty secret is long enough
+  const key = createHash('sha256').update(`leaddesk:recordings:${base ?? 'dev-only-signing-secret'}`).digest('hex');
+  return new FsObjectStore(env.RECORDINGS_DIR ?? './data/objects', key, (env.PUBLIC_API_URL ?? '').replace(/\/$/, ''));
 }

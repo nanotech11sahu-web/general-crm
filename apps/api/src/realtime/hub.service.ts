@@ -59,6 +59,7 @@ export class RealtimeHub implements OnModuleDestroy {
         return null;
       case 'task.created': return String(p.assigneeId) === c.userId ? mk('task.created', { taskId: e.aggregateId, leadId: p.leadId }) : null;
       case 'task.missed': return String(p.assigneeId) === c.userId || mgr ? mk('task.missed', { taskId: e.aggregateId, leadId: p.leadId }) : null;
+      case 'call.ended': return String(p.agentId) === c.userId ? mk('call.ended', { callSessionId: e.aggregateId, leadId: p.leadId, durationS: p.durationS, outcome: p.outcome }) : null;
       case 'task.escalated': return mgr ? mk('task.escalated', { taskId: e.aggregateId }) : null;
       default: return null;
     }

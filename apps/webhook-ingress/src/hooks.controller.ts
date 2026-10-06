@@ -25,6 +25,11 @@ async function ingest(db: TenantDb, queue: InboxQueue, conn: any, e: { provider:
   });
 }
 
+/** Exotel posts application/x-www-form-urlencoded; everyone else posts JSON. Raw bytes are verified before this runs. */
+const parseBody = (b: Buffer, contentType = ''): unknown => {
+  if (contentType.includes('application/x-www-form-urlencoded')) return Object.fromEntries(new URLSearchParams(b.toString('utf8')));
+  return safeJson(b);
+};
 const safeJson = (b: Buffer): unknown => { try { return JSON.parse(b.toString('utf8')); } catch { return { _raw: b.toString('utf8').slice(0, 10_000) }; } };
 
 /**
@@ -151,7 +156,7 @@ export class HooksController {
       throw new UnauthorizedException();
     }
     const externalEventId = connector.manifest.webhook.extractEventId(raw) || createHash('sha256').update(rawBody).digest('hex');
-    const r = await ingest(this.db, this.queue, conn, { provider, externalEventId, payload: safeJson(rawBody) });
+    const r = await ingest(this.db, this.queue, conn, { provider, externalEventId, payload: parseBody(rawBody, String(headers['content-type'] ?? '')) });
     return { ok: true, duplicate: r.duplicate };
   }
 }

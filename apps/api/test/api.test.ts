@@ -1,5 +1,8 @@
 import 'reflect-metadata';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 import { Test } from '@nestjs/testing';
@@ -18,7 +21,7 @@ beforeAll(async () => {
   process.env.MONGO_URL = rs.getUri('api_test');
   process.env.JWT_ACCESS_SECRET = 'test-access';
   process.env.LOCAL_KEK_BASE64 = randomBytes(32).toString('base64');
-  Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test' });
+  Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test', PUBLIC_INGRESS_URL: 'https://hooks.example.test', OBJECT_SIGNING_SECRET: 'test-signing-secret-0123456789', RECORDINGS_DIR: mkdtempSync(join(tmpdir(), 'ld-rec-')) });
   delete process.env.PUBLIC_APP_URL;
   process.env.REALTIME_POLL_MS = '80';
   const c = await MongoClient.connect(process.env.MONGO_URL); await migrateUp(c.db()); await c.close();
@@ -908,5 +911,108 @@ describe('messaging API (phase 4a, fixtures for WhatsApp Cloud + MSG91)', () => 
     expect((await request(http).get('/v1/templates').set(auth(o2.token)).expect(200)).body).toHaveLength(0);
     await request(http).get(`/v1/conversations/${convId}/messages`).set(auth(o2.token)).expect(404);
     await request(http).post('/v1/messages').set(auth(o2.token)).set('Idempotency-Key', 'cross-0000001').send({ leadId, channel: 'whatsapp', body: 'x' }).expect(404);
+  });
+});
+
+describe('telephony API (phase 4b, Exotel documented-shape fixtures)', () => {
+  const ex = { calls: [] as any[], recordingFetches: 0 };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url);
+    if (u.hostname === 'api.exotel.com' && u.pathname.endsWith('/Calls/connect.json')) { ex.calls.push(Object.fromEntries(new URLSearchParams(init.body))); return resp(200, { Call: { Sid: `sid-${ex.calls.length}`, Status: 'queued' } }); }
+    if (u.hostname === 'api.exotel.com') return resp(200, {});
+    if (u.hostname === 'recordings.exotel.com') { ex.recordingFetches++; return { ok: true, status: 200, text: async () => '', arrayBuffer: async () => new TextEncoder().encode('FAKE-MP3-BYTES').buffer, headers: { get: () => 'audio/mpeg' } }; }
+    return resp(404, {});
+  };
+  let owner: string; let tenantId: string; let agent: { tok: string; id: string }; let leadId: string; let connId: string;
+  const openSse = async (token: string) => {
+    if (!(http.address && http.address())) await app.listen(0);
+    const port = (http.address() as any).port;
+    const events: { type: string; data: any }[] = [];
+    let req!: nodeHttp.ClientRequest;
+    await new Promise<void>((resolve, reject) => {
+      req = nodeHttp.request({ host: '127.0.0.1', port, path: '/v1/stream', headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } }, (res) => {
+        let buf = ''; res.setEncoding('utf8');
+        res.on('data', (c: string) => { buf += c; for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) { const blk = buf.slice(0, i); buf = buf.slice(i + 2); const ev: any = { type: 'message' }; for (const l of blk.split('\n')) { if (l.startsWith('event:')) ev.type = l.slice(6).trim(); else if (l.startsWith('data:')) { try { ev.data = JSON.parse(l.slice(5)); } catch { /* keep-alive */ } } } events.push(ev); } });
+        resolve();
+      });
+      req.on('error', (e) => { if ((e as any).code !== 'ECONNRESET') reject(e); });
+      req.end();
+    });
+    return { close: () => req.destroy(), waitFor: async (type: string, ms = 4000) => { const t0 = Date.now(); for (;;) { const f = events.find((e) => e.type === type); if (f) return f; if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${type}; got ${events.map((e) => e.type).join(',')}`); await new Promise((r) => setTimeout(r, 25)); } } };
+  };
+  const hook = async (body: Record<string, string>) => {
+    // what the ingress does: verify, store raw (form decoded to a map), then the worker/replay processes it
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const row: any = await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.inbox.create({ connectionId: connId, provider: 'telephony-exotel', externalEventId: `${body.CallSid}:${body.Status}${body.RecordingUrl ? ':rec' : ''}${body.Extra ? ':' + body.Extra : ''}`, rawPayload: body, signatureValid: true, status: 'received' }));
+    return (await request(http).post(`/v1/inbox/${row._id}/replay`).set(auth(owner)).expect(201)).body;
+  };
+
+  beforeAll(async () => {
+    providerFetch = fx;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'tel-owner@x.io', password: 'correct-horse-9', name: 'Tess', tenantName: 'Tel Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'tel-a1@x.io', role: 'agent' }).expect(201);
+    const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'Asha', password: 'agent-pass-123' }).expect(201);
+    agent = { tok: r.body.accessToken, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId };
+    leadId = (await request(http).post('/v1/leads').set(auth(agent.tok)).send({ name: 'Vikram', contacts: [{ value: '9812399999' }] }).expect(201)).body.leadId;
+  });
+
+  it('without a voice connection the call falls back to tap-to-call (self-reported)', async () => {
+    const d = (await request(http).post('/v1/calls').set(auth(agent.tok)).send({ leadId }).expect(201)).body;
+    expect(d.mode).toBe('tap'); expect(d.dialUri).toMatch(/^tel:/);
+    const oc = (await request(http).get('/v1/outcomes').set(auth(agent.tok)).expect(200)).body;
+    await request(http).post(`/v1/leads/${leadId}/outcome`).set(auth(agent.tok)).send({ outcomeId: oc[0]._id, callSessionId: d.callSessionId, durationS: 3, next: { dueAt: new Date(Date.now() + 86400e3).toISOString(), contextNote: 'Retry the call tomorrow morning' } }).expect(201);
+  });
+
+  it('cloud mode: platform rings the agent, number never exposed, system-verified duration, recording behind permission + signed URL', async () => {
+    const c = (await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'telephony-exotel', name: 'Exotel', credentials: { apiKey: 'k', apiToken: 't' }, config: { accountSid: 'acme1', callerId: '+918000000000', agentNumbers: JSON.stringify({ [agent.id]: '+919900000001' }) } }).expect(201)).body;
+    connId = c.connection.id;
+    expect(c.connection.status).toBe('verified');
+
+    const stream = await openSse(agent.tok);
+    const d = (await request(http).post('/v1/calls').set(auth(agent.tok)).send({ leadId }).expect(201)).body;
+    expect(d.mode).toBe('cloud'); expect(JSON.stringify(d)).not.toContain('9812399999');
+    expect(ex.calls[0]).toMatchObject({ From: '+919900000001', To: '+919812399999', CallerId: '+918000000000', Record: 'true' });
+    expect(ex.calls[0].StatusCallback).toMatch(/^https:\/\/hooks\.example\.test\/hooks\/telephony-exotel\/.+\?token=/);
+    // a second dial while the first awaits its outcome is refused
+    await request(http).post('/v1/calls').set(auth(agent.tok)).send({ leadId }).expect(409).expect((r) => expect(r.body.code).toBe('outcome_pending'));
+
+    await hook({ CallSid: 'sid-1', Status: 'in-progress' });
+    await hook({ CallSid: 'sid-1', Status: 'completed', ConversationDuration: '125' });
+    const dup = await hook({ CallSid: 'sid-1', Status: 'completed', ConversationDuration: '125', Extra: '1' }); // a re-delivered callback (different bytes) is harmless
+    expect(dup.status).toBe('done');
+    const ev = await stream.waitFor('call.ended');
+    expect(ev.data).toMatchObject({ callSessionId: d.callSessionId, leadId, durationS: 125 });
+    stream.close();
+
+    await hook({ CallSid: 'sid-1', Status: 'completed', RecordingUrl: 'https://recordings.exotel.com/acme1/rec1.mp3' });
+    expect(ex.recordingFetches).toBe(1);
+    const calls = (await request(http).get('/v1/calls').query({ leadId }).set(auth(agent.tok)).expect(200)).body;
+    expect(calls[0]).toMatchObject({ mode: 'cloud', state: 'ended', durationS: 125, durationSource: 'system' });
+    expect(JSON.stringify(calls)).not.toMatch(/recordingObjectKey|recordings\//);
+
+    await request(http).get(`/v1/calls/${d.callSessionId}/recording`).set(auth(agent.tok)).expect(403); // agents cannot listen
+    const rec = (await request(http).get(`/v1/calls/${d.callSessionId}/recording`).set(auth(owner)).expect(200)).body;
+    expect(rec.url).toMatch(/\/v1\/recordings\//);
+    const audio = await request(http).get(new URL(rec.url).pathname).expect(200); // token is the credential
+    expect(audio.headers['content-type']).toContain('audio/mpeg');
+    await request(http).get(new URL(rec.url).pathname + 'x').expect(404); // tampered
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    expect(await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.audit.find({ action: 'recording.accessed' }))).toHaveLength(1); // only the manager's access, not the refused agent
+
+    // outcome after the system-verified call keeps the system duration
+    const outcomes = (await request(http).get('/v1/outcomes').set(auth(agent.tok)).expect(200)).body;
+    const connected = outcomes.find((x: any) => x.key === 'connected' || x.connected) ?? outcomes[0];
+    await request(http).post(`/v1/leads/${leadId}/outcome`).set(auth(agent.tok)).send({ outcomeId: connected._id, callSessionId: d.callSessionId, durationS: 5, next: { dueAt: new Date(Date.now() + 86400e3).toISOString(), contextNote: 'Send brochure and confirm visit slot' } }).expect(201);
+  });
+
+  it('a failed provider call frees the agent; other tenants cannot reach recordings or calls', async () => {
+    providerFetch = async (u, i) => (new URL(u).pathname.endsWith('/Calls/connect.json') ? resp(500, {}) : fx(u, i));
+    await request(http).post('/v1/calls').set(auth(agent.tok)).send({ leadId }).expect(502);
+    providerFetch = fx;
+    await request(http).post('/v1/calls').set(auth(agent.tok)).send({ leadId }).expect(201); // not blocked by the failed attempt
+    const o2 = await signup('tel-other');
+    await request(http).get('/v1/calls').query({ leadId }).set(auth(o2.token)).expect(404);
   });
 });

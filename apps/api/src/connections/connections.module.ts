@@ -3,7 +3,7 @@ import { IsObject, IsOptional, IsString, MinLength } from 'class-validator';
 import type { ConnectorRegistry, FetchLike } from '@leaddesk/connectors-core';
 import { createRegistry } from '@leaddesk/connectors';
 import type { KeyService } from '@leaddesk/crypto';
-import { ConnectionService, InboxService } from '@leaddesk/domain';
+import { ConnectionService, InboxService, objectStoreFromEnv } from '@leaddesk/domain';
 import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
 import { runWithTenant, type TenantDb } from '@leaddesk/db';
 import { AuditService } from '../audit/audit.service';
@@ -39,7 +39,7 @@ export class ConnectFacade {
     readonly audit: AuditService,
   ) {
     this.conns = new ConnectionService(db, keys, registry);
-    this.inbox = new InboxService(db, registry, 8, keys);
+    this.inbox = new InboxService(db, registry, 8, keys, { store: objectStoreFromEnv() });
   }
   /** Replay runs in-process like imports; the worker runs the same InboxService from the queue. */
   replayAsync(tenantId: string, userId: string, inboxId: string) {

@@ -7,7 +7,7 @@ import { OutcomeSheet, type Outcome, type SheetTarget, type Suggestion } from '.
 
 interface Item { kind: string; leadId: string; leadName: string; reason: string; taskId?: string; callSessionId?: string; dueAt?: string; suggestedAction: { type: string } }
 interface Queue { items: Item[]; counts: Record<string, number>; total: number; caughtUp: boolean }
-interface Dialing { callSessionId: string; leadId: string; leadName: string; dialUri: string }
+interface Dialing { callSessionId: string; leadId: string; leadName: string; mode: 'cloud' | 'tap'; dialUri?: string }
 
 /** Hands the number to the phone's dialer. Overridable seam so browser tests (which have no dialer) can stub it. */
 function openDialer(uri: string) {
@@ -53,13 +53,20 @@ export default function Today() {
   // realtime + safety-net polling + presence heartbeat
   useEffect(() => {
     if (!ready) return;
-    const stop = openStream((type) => { if (LIVE_TEXT[type]) { say(LIVE_TEXT[type]); void load(); } }, setLive);
+    const stop = openStream((type, data) => {
+      if (type === 'call.ended') { // cloud call finished: the system-verified duration arrives with the event
+        const d = dialingRef.current;
+        if (d && d.callSessionId === data?.callSessionId) { setDialing(null); setSheet({ leadId: d.leadId, leadName: d.leadName, callSessionId: d.callSessionId, durationS: data.durationS }); }
+        void load(); return;
+      }
+      if (LIVE_TEXT[type]) { say(LIVE_TEXT[type]); void load(); }
+    }, setLive);
     const poll = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 30_000);
     const beat = () => void api('/v1/me/presence', { method: 'PUT', body: { state: document.visibilityState === 'visible' ? 'online' : 'away' } }).catch(() => undefined);
     beat(); const hb = setInterval(beat, 60_000);
     const onVis = () => {
       beat();
-      if (document.visibilityState === 'visible' && dialingRef.current) void finishCall(); // back from the dialer: open the outcome sheet
+      if (document.visibilityState === 'visible' && dialingRef.current?.mode === 'tap') void finishCall(); // back from the dialer: open the outcome sheet
     };
     document.addEventListener('visibilitychange', onVis);
     return () => { stop(); clearInterval(poll); clearInterval(hb); document.removeEventListener('visibilitychange', onVis); };
@@ -68,9 +75,9 @@ export default function Today() {
   async function call(item: Item) {
     setError(null);
     try {
-      const r = await api<{ callSessionId: string; dialUri: string }>('/v1/calls', { method: 'POST', body: { leadId: item.leadId } });
+      const r = await api<{ mode: 'cloud' | 'tap'; callSessionId: string; dialUri?: string }>('/v1/calls', { method: 'POST', body: { leadId: item.leadId } });
       setDialing({ ...r, leadId: item.leadId, leadName: item.leadName });
-      openDialer(r.dialUri);
+      if (r.mode === 'tap' && r.dialUri) openDialer(r.dialUri); // cloud: the platform rings the agent's phone, nothing to open
     } catch (e) {
       if (e instanceof ApiError && e.code === 'outcome_pending') { void load(); setError('Log your previous call first.'); }
       else setError(e instanceof ApiError ? e.message : 'Could not start the call');
@@ -121,14 +128,22 @@ export default function Today() {
         </div>
       )}
 
-      {dialing && (
+      {dialing?.mode === 'cloud' && (
+        <div className="card" role="status" data-testid="cloud-call">
+          <span className="kind">Calling</span>
+          <div className="name">{dialing.leadName}</div>
+          <p className="reason">Answer your phone — we connect you to the lead. The outcome sheet opens when the call ends.</p>
+        </div>
+      )}
+
+      {dialing?.mode === 'tap' && (
         <div className="card" role="status">
           <span className="kind">On a call</span>
           <div className="name">{dialing.leadName}</div>
           <p className="reason">Finish the call, then come back here. The outcome sheet opens automatically.</p>
           <div className="row">
             <button className="primary big" onClick={finishCall}>Call finished</button>
-            <a className="btn" data-testid="dial-link" href={dialing.dialUri} style={{ display: 'inline-flex', alignItems: 'center' }}>Open dialer again</a>
+            <a className="btn" data-testid="dial-link" href={dialing.dialUri ?? '#'} style={{ display: 'inline-flex', alignItems: 'center' }}>Open dialer again</a>
           </div>
         </div>
       )}

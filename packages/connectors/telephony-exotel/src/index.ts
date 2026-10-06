@@ -2,7 +2,6 @@ import { AuthRevokedError, createHttp, HttpError, verifyToken, type CanonicalEve
 
 export interface ExotelEnv { fetch?: FetchLike }
 const HOSTS = ['api.exotel.com', 'api.in.exotel.com', 'api.exotel.in'];
-const digits = (e164: string) => e164.replace(/\D/g, '');
 
 /** Exotel "connect two numbers": rings the agent first, then bridges to the lead. Documented shapes; not verified against a live account. */
 export function createExotel(env: ExotelEnv = {}): Connector {
@@ -30,7 +29,12 @@ export function createExotel(env: ExotelEnv = {}): Connector {
       webhook: {
         secretKey: 'webhookToken',
         verify: (req, secret) => verifyToken(req, secret),
-        extractEventId: (req) => { try { const o = JSON.parse(req.rawBody.toString('utf8')); return `${o.CallSid ?? o.callsid ?? ''}:${o.Status ?? o.status ?? ''}${o.RecordingUrl ? ':rec' : ''}`; } catch { return ''; } },
+        extractEventId: (req) => {
+          const t = req.rawBody.toString('utf8');
+          let o: any;
+          try { o = JSON.parse(t); } catch { o = Object.fromEntries(new URLSearchParams(t)); } // Exotel posts form-encoded
+          return o.CallSid || o.callsid ? `${o.CallSid ?? o.callsid}:${o.Status ?? o.status ?? ''}${o.RecordingUrl ? ':rec' : ''}` : '';
+        },
       },
     },
 
