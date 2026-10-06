@@ -62,6 +62,9 @@ export class MessageRejectedError extends Error {
   constructor(public readonly code: 'window_closed' | 'recipient_unreachable' | 'template_rejected' | 'other', message: string) { super(message); this.name = 'MessageRejectedError'; }
 }
 
+export interface AiRequest { model: string; system: string; user: string; maxTokens: number; json?: boolean; reasoningEffort?: 'low' | 'medium' | 'high'; temperature?: number }
+export interface AiResult { text: string; model: string; usage: { promptTokens: number; completionTokens: number } }
+
 export interface CallRequest { agentNumber: string; leadNumber: string; callbackUrl: string; record?: boolean }
 
 export interface ConnectorContext {
@@ -98,6 +101,10 @@ export interface Connector {
   send?(ctx: ConnectorContext, msg: OutboundMessage): Promise<{ providerMessageId: string }>;
   syncTemplates?(ctx: ConnectorContext): Promise<ProviderTemplate[]>;
   submitTemplate?(ctx: ConnectorContext, t: { name: string; language: string; category: string; body: string; sampleValues: string[] }): Promise<{ providerTemplateId: string; status: 'approved' | 'rejected' | 'pending' }>;
+  /** Chat completion (AI providers). Lead text is untrusted: callers wrap it as data and validate the output. */
+  complete?(ctx: ConnectorContext, req: AiRequest): Promise<AiResult>;
+  /** Model ids the key can use right now (model lists change; features refuse to run on a missing model). */
+  listModels?(ctx: ConnectorContext): Promise<string[]>;
   /** Rings the agent first, then bridges to the lead. The lead's number never reaches the browser. */
   startCall?(ctx: ConnectorContext, req: CallRequest): Promise<{ providerCallId: string }>;
   /** Download a recording given the provider URL carried by a webhook. */

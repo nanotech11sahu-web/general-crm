@@ -8,7 +8,10 @@ interface Channels { whatsapp: { connected: boolean }; sms: { connected: boolean
 interface Conversation { _id: string; channel: Channel; windowExpiresAt?: string; unreadCount: number }
 interface Message { _id: string; direction: 'in' | 'out'; body: string; status: string; source?: string; createdAt: string; error?: string }
 interface Template { _id: string; name: string; channel: Channel; body: string }
-interface LeadView { displayName: string; city?: string }
+interface LeadView { displayName: string; city?: string; ai?: { summary?: string; temperature?: string; reasons?: string[]; score?: number; nextBestAction?: { channel: string; note: string } } }
+interface Suggestion { _id: string; type: string; payload: any; confidence?: number; status: string }
+const AI_ACTIONS: [string, string][] = [['summary', 'Summarise'], ['score', 'Score'], ['autofill', 'Fill fields'], ['assess', 'Full assessment']];
+const describe = (s: Suggestion) => s.type === 'summary' ? s.payload.summary : s.type === 'scoring' ? `Score ${s.payload.score} (${s.payload.temperature}): ${(s.payload.reasons ?? []).join('; ')}` : s.type === 'autofill' ? `Fill: ${Object.entries(s.payload.fields ?? {}).map(([k, v]) => `${k} = ${v}`).join(', ')}` : s.type === 'assessment' ? `${s.payload.summary} · score ${s.payload.score} (${s.payload.temperature}) · ${s.payload.validity}${s.payload.nextBestAction ? ` · first action: ${s.payload.nextBestAction.channel} ${s.payload.nextBestAction.timing}` : ''}` : s.type === 'next_action' ? `Next: ${s.payload.nextAction?.contextNote ?? ''}${s.payload.outcomeLabel ? ` (outcome: ${s.payload.outcomeLabel})` : ''}` : s.type;
 
 const STATUS_TEXT: Record<string, string> = { queued: 'sending…', sent: 'sent', delivered: 'delivered', read: 'read', failed: 'failed', received: '' };
 const ERRORS: Record<string, string> = {
@@ -26,6 +29,7 @@ export default function LeadThread() {
   const [convs, setConvs] = useState<Conversation[]>([]); const [channel, setChannel] = useState<Channel>('whatsapp');
   const [messages, setMessages] = useState<Message[]>([]); const [templates, setTemplates] = useState<Template[]>([]);
   const [text, setText] = useState(''); const [tpl, setTpl] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const [aiOn, setAiOn] = useState(false); const [sugg, setSugg] = useState<Suggestion[]>([]); const [aiBusy, setAiBusy] = useState(false);
   const keyRef = useRef<string>(''); const bottom = useRef<HTMLDivElement>(null);
 
   const conv = convs.find((c) => c.channel === channel);
@@ -57,6 +61,22 @@ export default function LeadThread() {
   }, [id, router]);
 
   useEffect(() => { if (ready) void loadThread(); }, [ready, loadThread]);
+  const loadAi = useCallback(async () => {
+    const st = await api<{ enabled: boolean; killSwitch: boolean }>('/v1/ai/settings').catch(() => null);
+    setAiOn(!!st?.enabled && !st.killSwitch);
+    if (st?.enabled) setSugg(await api<Suggestion[]>(`/v1/ai/suggestions?leadId=${id}&status=pending`).catch(() => []));
+  }, [id]);
+  useEffect(() => { if (ready) void loadAi(); }, [ready, loadAi]);
+  async function runAi(kind: string) {
+    setAiBusy(true); setError(null);
+    try { await api(`/v1/ai/leads/${id}/${kind}`, { method: 'POST' }); await loadAi(); }
+    catch (e) { setError(e instanceof ApiError ? e.message : 'AI is unavailable. Carry on manually.'); }
+    finally { setAiBusy(false); }
+  }
+  async function decide(sid: string, accept: boolean) {
+    try { await api(`/v1/ai/suggestions/${sid}/${accept ? 'accept' : 'reject'}`, { method: 'POST' }); await loadAi(); if (accept) setLead(await api<LeadView>(`/v1/leads/${id}`)); }
+    catch (e) { setError(e instanceof ApiError ? e.message : 'Could not apply that suggestion'); await loadAi(); }
+  }
   useEffect(() => { bottom.current?.scrollIntoView?.({ block: 'end' }); }, [messages.length]);
   useEffect(() => {
     if (!ready) return;
@@ -93,6 +113,19 @@ export default function LeadThread() {
         <button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Back</button>
       </div>
       {lead?.city && <p className="reason">{lead.city}</p>}
+      {lead?.ai?.summary && <p className="reason" data-testid="ai-summary">{lead.ai.summary}{lead.ai.temperature ? ` (${lead.ai.temperature})` : ''}</p>}
+      {aiOn && (
+        <section className="card" aria-label="AI assistant"><h2>AI assistant</h2>
+          <p className="reason">AI only suggests. Nothing changes until you accept.</p>
+          <div className="row">{AI_ACTIONS.map(([k, label]) => <button key={k} disabled={aiBusy} onClick={() => runAi(k)}>{label}</button>)}</div>
+          {sugg.map((x) => (
+            <div key={x._id} data-testid="suggestion" style={{ marginTop: 10 }}>
+              <p className="reason">{describe(x)}{x.confidence !== undefined ? ` · ${Math.round(x.confidence * 100)}% sure` : ''}</p>
+              <div className="row"><button className="primary" onClick={() => decide(x._id, true)}>Accept</button><button onClick={() => decide(x._id, false)}>Dismiss</button></div>
+            </div>
+          ))}
+        </section>
+      )}
       {error && <p className="err" role="alert">{error}</p>}
 
       {!connected && (

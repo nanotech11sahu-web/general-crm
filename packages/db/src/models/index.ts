@@ -110,6 +110,7 @@ export function buildModels(conn: Connection) {
     mergedInto: ObjectId,
     lastOwnerId: ObjectId,
     sla: Schema.Types.Mixed, // { policyId, state, claimDueAt, firstContactDueAt, reassignCount, triedUserIds[] }
+    ai: Schema.Types.Mixed, // { summary, score, temperature, reasons[], validity, nextBestAction, missingInfo[], model, assessedAt } — written only by an accepted/auto-applied suggestion
     deletedAt: Date,
   });
 
@@ -318,6 +319,30 @@ export function buildModels(conn: Connection) {
     leakage: Schema.Types.Mixed,
     counts: Schema.Types.Mixed,
   });
+  /** Everything the AI proposes. Nothing reaches lead data except through accept (or the tenant's explicit auto-apply level). */
+  const AiSuggestion = make(conn, 'AiSuggestion', {
+    leadId: ObjectId,
+    feature: { type: String, required: true },
+    type: { type: String, required: true }, // summary | autofill | scoring | next_action | assessment
+    payload: Schema.Types.Mixed,
+    confidence: Number,
+    status: { type: String, enum: ['pending', 'accepted', 'rejected', 'applied', 'superseded', 'failed'], default: 'pending' },
+    inputHash: String,
+    model: String,
+    promptVersion: String,
+    appliedBy: String, // 'auto' | user id
+    decidedAt: Date,
+    error: String,
+  });
+  /** One document per tenant per local day per feature. */
+  const AiUsage = make(conn, 'AiUsage', {
+    day: { type: String, required: true },
+    feature: { type: String, required: true },
+    requests: { type: Number, default: 0 },
+    failures: { type: Number, default: 0 },
+    tokensIn: { type: Number, default: 0 },
+    tokensOut: { type: Number, default: 0 },
+  });
   const Cadence = make(conn, 'Cadence', {
     name: { type: String, required: true },
     active: { type: Boolean, default: true },
@@ -431,7 +456,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

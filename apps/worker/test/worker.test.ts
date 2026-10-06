@@ -182,3 +182,11 @@ describe('PulseSweeper', () => {
     expect(r).toEqual({ sent: 0 });
   });
 });
+
+describe('AiSweeper', () => {
+  it('is a no-op across tenants when none has AI on', async () => {
+    const { AiSweeper } = await import('../src/ai-sweeper');
+    const { LocalKeyService } = await import('@leaddesk/crypto'); const { createRegistry } = await import('@leaddesk/connectors');
+    expect(await new AiSweeper(db, sys, new LocalKeyService(Buffer.alloc(32, 1)), createRegistry({} as any)).run()).toEqual({ assessed: 0 });
+  });
+});

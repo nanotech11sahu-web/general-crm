@@ -3,6 +3,7 @@ import { createMetaLeadAds } from '@leaddesk/connector-meta-leadads';
 import { createGoogleSheets } from '@leaddesk/connector-google-sheets';
 import { createWhatsAppCloud } from '@leaddesk/connector-whatsapp-cloud';
 import { createMsg91Sms } from '@leaddesk/connector-sms-msg91';
+import { createGroqAi } from '@leaddesk/connector-ai-groq';
 import { createExotel } from '@leaddesk/connector-telephony-exotel';
 
 export { metaChallenge, leadgenChanges } from '@leaddesk/connector-meta-leadads';
@@ -20,6 +21,7 @@ export function createRegistry(env: NodeJS.ProcessEnv = process.env, fetch?: Fet
   if (env.META_APP_ID && env.META_APP_SECRET) r.register(createWhatsAppCloud({ appId: env.META_APP_ID, appSecret: env.META_APP_SECRET, verifyToken: env.META_WEBHOOK_VERIFY_TOKEN ?? '', graphVersion: env.META_GRAPH_VERSION, fetch }));
   r.register(createMsg91Sms({ fetch }));
   r.register(createExotel({ fetch }));
+  r.register(createGroqAi({ fetch, baseUrl: env.GROQ_API_BASE_URL }));
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) r.register(createGoogleSheets({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, fetch }));
   return r;
 }

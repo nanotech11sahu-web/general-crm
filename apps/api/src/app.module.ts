@@ -17,9 +17,10 @@ import { RealtimeModule } from './realtime/realtime.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { CadencesModule } from './cadences/cadences.module';
 import { PulseModule } from './pulse/pulse.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
-  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule],
+  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule, AiModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },

@@ -13,6 +13,7 @@ import { DoSweeper } from './do-sweeper';
 import { SlaSweeper } from './sla-sweeper';
 import { CadenceSweeper } from './cadence-sweeper';
 import { PulseSweeper } from './pulse-sweeper';
+import { AiSweeper } from './ai-sweeper';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
@@ -74,13 +75,19 @@ async function bootstrap() {
   const pulseWorker = new Worker('pulse-sweep', async () => pulseSweeper.run(), { connection, concurrency: 1 });
   pulseWorker.on('failed', (job, err) => console.error('pulse sweep failed', err.message));
 
+  const aiSweeper = new AiSweeper(db, sys, app.get(KEY_SERVICE), registry);
+  const aiQueue = new Queue('ai-sweep', { connection });
+  await aiQueue.upsertJobScheduler('ai-sweep', { every: 60_000 }, { name: 'ai.assess', data: {} });
+  const aiWorker = new Worker('ai-sweep', async () => aiSweeper.run(), { connection, concurrency: 1 });
+  aiWorker.on('failed', (job, err) => console.error('ai sweep failed', err.message));
+
   const events = new Queue('events', { connection });
   const dispatcher = new OutboxDispatcher(sys, {
     publish: async (e) => { await events.add(e.type, e, { jobId: e.eventId, removeOnComplete: 1000 }); },
   });
   dispatcher.start();
 
-  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await slaWorker.close(); await cadenceWorker.close(); await pulseWorker.close(); await app.close(); process.exit(0); };
+  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await slaWorker.close(); await cadenceWorker.close(); await pulseWorker.close(); await aiWorker.close(); await app.close(); process.exit(0); };
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 }
 bootstrap();

@@ -239,7 +239,7 @@ export class DoService {
       const weight = src ? s.sourceWeights[src.kind] ?? 0 : 0;
       items.push({
         kind: 'new_lead', leadId: String(l._id), leadName: l.displayName, dueAt: new Date(since + s.firstContactSeconds * 1000),
-        reason: ['New lead ' + ago(elapsed * 1000) + ' ago', src?.name, l.city].filter(Boolean).join(' · ') + (remaining <= 0 ? ' · SLA breached' : ''),
+        reason: ['New lead ' + ago(elapsed * 1000) + ' ago', src?.name, l.city, l.ai?.temperature && l.ai?.reasons?.[0] ? `${String(l.ai.temperature)[0].toUpperCase()}${String(l.ai.temperature).slice(1)}: ${l.ai.reasons[0]}` : null].filter(Boolean).join(' · ') + (remaining <= 0 ? ' · SLA breached' : ''),
         priority: 100 + (l.score ?? 50) + boost + weight, suggestedAction: { type: 'call' },
       });
     }

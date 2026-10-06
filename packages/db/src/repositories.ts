@@ -65,6 +65,8 @@ export function createRepositories(m: Models) {
     messages: new TenantScopedRepository(m.Message),
     templates: new TenantScopedRepository(m.MessageTemplate),
     pulseDaily: new TenantScopedRepository(m.PulseDaily),
+    aiSuggestions: new TenantScopedRepository(m.AiSuggestion),
+    aiUsage: new TenantScopedRepository(m.AiUsage),
     cadences: new TenantScopedRepository(m.Cadence),
     enrollments: new TenantScopedRepository(m.CadenceEnrollment),
     callSessions: new TenantScopedRepository(m.CallSession),
@@ -106,6 +108,10 @@ export function createSystemOps(m: Models) {
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.phoneNumberId': phoneNumberId, status: { $ne: 'revoked' } }).lean().exec()),
     resolveConnectionsByWaba: (provider: string, wabaId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.wabaId': wabaId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** AI sweeper: tenants with AI switched on (settings only; lead work happens inside the tenant context). */
+    aiTenants: () =>
+      runAsSystem('ai.sweep', () => m.Tenant.find({ status: 'active', 'settings.ai.enabled': true }, { timezone: 1, settings: 1 }).lean().exec()),
 
     /** Pulse digest/rollup sweeper: every live tenant with its timezone and settings. */
     pulseTenants: () =>

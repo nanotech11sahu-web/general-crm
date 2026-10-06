@@ -1,0 +1,9 @@
+{
+  "name": "@leaddesk/connector-ai-groq",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": { "typecheck": "tsc -p . --noEmit", "test": "vitest run" },
+  "dependencies": { "@leaddesk/connectors-core": "workspace:*" },
+  "devDependencies": { "@types/node": "^22.10.0" }
+}

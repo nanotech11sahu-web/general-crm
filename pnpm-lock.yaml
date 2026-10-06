@@ -253,6 +253,16 @@ importers:
         specifier: ^10.1.0
         version: 10.4.3
 
+  packages/connectors/ai-groq:
+    dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
   packages/connectors/core:
     devDependencies:
       '@types/node':
@@ -281,6 +291,9 @@ importers:
 
   packages/connectors/registry:
     dependencies:
+      '@leaddesk/connector-ai-groq':
+        specifier: workspace:*
+        version: link:../ai-groq
       '@leaddesk/connector-google-sheets':
         specifier: workspace:*
         version: link:../google-sheets
@@ -386,6 +399,9 @@ importers:
       exceljs:
         specifier: ^4.4.0
         version: 4.4.0
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

@@ -31,6 +31,7 @@ export const SYSTEM_OPERATIONS = [
   'sla.sweep',
   'cadence.sweep',
   'pulse.sweep',
+  'ai.sweep',
   'scheduler.listConnections',
   'auth.findUserByEmail',
   'auth.listMemberships',

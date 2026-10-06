@@ -1162,3 +1162,86 @@ describe('pulse API (phase 5)', () => {
     expect((await request(http).get('/v1/pulse/leakage').set(auth(o2.token)).expect(200)).body.untouched.count).toBe(0);
   });
 });
+
+describe('AI API (phase 6, Groq fixtures)', () => {
+  const ai = { bodies: [] as any[], replies: [] as string[] };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url);
+    if (u.hostname !== 'api.groq.com') return resp(404, {});
+    if (u.pathname.endsWith('/models')) return resp(200, { data: [{ id: 'openai/gpt-oss-20b' }, { id: 'openai/gpt-oss-120b' }] });
+    if (u.pathname.endsWith('/chat/completions')) { ai.bodies.push(JSON.parse(init.body)); const t = ai.replies.shift(); return t === undefined ? resp(500, {}) : resp(200, { model: JSON.parse(init.body).model, choices: [{ message: { content: t } }], usage: { prompt_tokens: 50, completion_tokens: 10 } }); }
+    return resp(404, {});
+  };
+  let owner: string; let a1: { tok: string; id: string }; let a2: { tok: string; id: string }; let mgr: string; let lead1: string; let lead2: string;
+  beforeAll(async () => {
+    providerFetch = fx;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'ai-owner@x.io', password: 'correct-horse-9', name: 'Ava', tenantName: 'AI Co', industryPreset: 'real_estate' }).expect(201);
+    owner = o.body.accessToken;
+    const mk = async (email: string, role: string) => {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email.split('@')[0], password: 'agent-pass-123' }).expect(201);
+      return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string };
+    };
+    a1 = await mk('ai-a1@x.io', 'agent'); a2 = await mk('ai-a2@x.io', 'agent'); mgr = (await mk('ai-m@x.io', 'manager')).tok;
+    lead1 = (await request(http).post('/v1/leads').set(auth(a1.tok)).send({ name: 'Anita Pune', city: 'Pune', contacts: [{ value: '9812388881' }] }).expect(201)).body.leadId;
+    lead2 = (await request(http).post('/v1/leads').set(auth(a2.tok)).send({ name: 'Rohit Pune', city: 'Pune', contacts: [{ value: '9812388882' }] }).expect(201)).body.leadId;
+  });
+
+  it('is off by default; admins connect a provider and switch it on; nobody else can', async () => {
+    expect((await request(http).get('/v1/ai/settings').set(auth(a1.tok)).expect(200)).body).toMatchObject({ enabled: false, killSwitch: false, dailyCap: 200 });
+    await request(http).post(`/v1/ai/leads/${lead1}/summary`).set(auth(a1.tok)).expect(409).expect((r) => expect(r.body.code).toBe('ai_disabled'));
+    await request(http).put('/v1/ai/settings').set(auth(mgr)).send({ enabled: true }).expect(403);
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ enabled: true }).expect(422).expect((r) => expect(r.body.code).toBe('no_ai_connection'));
+    const c = (await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'ai-groq', name: 'Groq', credentials: { apiKey: 'gsk_' + 'x'.repeat(30) } }).expect(201)).body;
+    expect(c.connection).toMatchObject({ status: 'verified', category: 'ai' }); expect(JSON.stringify(c)).not.toContain('gsk_' + 'x'.repeat(30));
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ dailyCap: -1 }).expect(400);
+    expect((await request(http).put('/v1/ai/settings').set(auth(owner)).send({ enabled: true, dailyCap: 50 }).expect(200)).body).toMatchObject({ enabled: true, dailyCap: 50 });
+  });
+
+  it('summary: a suggestion first (PII masked on the wire), the agent decides, a colleague cannot', async () => {
+    ai.bodies.length = 0; ai.replies.push(JSON.stringify({ summary: 'Anita from Pune is exploring flats.' }));
+    const s = (await request(http).post(`/v1/ai/leads/${lead1}/summary`).set(auth(a1.tok)).expect(201)).body;
+    expect(s).toMatchObject({ type: 'summary', status: 'pending' });
+    expect(JSON.stringify(ai.bodies[0])).not.toMatch(/9812388881/); expect(ai.bodies[0].model).toBe('openai/gpt-oss-120b'); expect(ai.bodies[0].response_format).toEqual({ type: 'json_object' });
+    expect((await request(http).get(`/v1/leads/${lead1}`).set(auth(a1.tok)).expect(200)).body.ai).toBeUndefined();
+    await request(http).post(`/v1/ai/leads/${lead1}/summary`).set(auth(a2.tok)).expect(403); // not a2's lead
+    await request(http).get('/v1/ai/suggestions').query({ leadId: lead1 }).set(auth(a2.tok)).expect(403);
+    await request(http).post(`/v1/ai/suggestions/${s._id}/accept`).set(auth(a2.tok)).expect(403);
+    expect((await request(http).get('/v1/ai/suggestions').query({ leadId: lead1, status: 'pending' }).set(auth(a1.tok)).expect(200)).body).toHaveLength(1);
+    await request(http).post(`/v1/ai/suggestions/${s._id}/accept`).set(auth(a1.tok)).expect(201);
+    await request(http).post(`/v1/ai/suggestions/${s._id}/accept`).set(auth(a1.tok)).expect(409);
+    expect((await request(http).get(`/v1/leads/${lead1}`).set(auth(a1.tok)).expect(200)).body.ai).toMatchObject({ summary: 'Anita from Pune is exploring flats.' });
+  });
+
+  it('provider trouble degrades gracefully; the usage counter and cap are visible to managers', async () => {
+    ai.replies.length = 0;
+    await request(http).post(`/v1/ai/leads/${lead2}/score`).set(auth(a2.tok)).expect(502).expect((r) => expect(r.body.code).toBe('ai_unavailable'));
+    const u = (await request(http).get('/v1/ai/usage').set(auth(mgr)).expect(200)).body;
+    expect(u).toMatchObject({ cap: 50 }); expect(u.used).toBeGreaterThanOrEqual(2); expect(u.features.find((f: any) => f.feature === 'summary')).toMatchObject({ requests: 1, tokensIn: 50, tokensOut: 10 });
+    await request(http).get('/v1/ai/usage').set(auth(a1.tok)).expect(403);
+    expect((await request(http).get(`/v1/leads/${lead2}`).set(auth(a2.tok)).expect(200)).body.displayName).toBe('Rohit Pune'); // core app unaffected
+  });
+
+  it('natural-language search returns only what the caller may see, built from a validated filter', async () => {
+    ai.replies.push(JSON.stringify({ filter: { city: 'pune', untouched: true } }));
+    const r = (await request(http).post('/v1/ai/search').set(auth(a1.tok)).send({ q: 'leads from Pune nobody called' }).expect(201)).body;
+    expect(r.interpreted).toBe('leads in pune never contacted'); expect(r.items.map((l: any) => l._id)).toEqual([lead1]); // a2's lead is outside a1's scope
+    expect(JSON.stringify(r)).not.toMatch(/98123888\d\d/);
+    ai.replies.push(JSON.stringify({ filter: { city: 'pune' } }));
+    expect((await request(http).post('/v1/ai/search').set(auth(owner)).send({ q: 'pune' }).expect(201)).body.total).toBe(2);
+    ai.replies.push(JSON.stringify({ filter: { $where: '1' } }), JSON.stringify({ filter: { $where: '1' } }));
+    await request(http).post('/v1/ai/search').set(auth(owner)).send({ q: 'bad' }).expect(502);
+    await request(http).post('/v1/ai/search').send({ q: 'x' }).expect(401);
+  });
+
+  it('kill switch stops everything at once; other tenants see none of it', async () => {
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ killSwitch: true }).expect(200);
+    await request(http).post('/v1/ai/search').set(auth(owner)).send({ q: 'pune' }).expect(409);
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ killSwitch: false }).expect(200);
+    const o2 = await signup('ai-other');
+    expect((await request(http).get('/v1/ai/settings').set(auth(o2.token)).expect(200)).body.enabled).toBe(false);
+    await request(http).post(`/v1/ai/leads/${lead1}/summary`).set(auth(o2.token)).expect(404);
+    expect((await request(http).get('/v1/ai/usage').set(auth(o2.token)).expect(200)).body.used).toBe(0);
+  });
+});

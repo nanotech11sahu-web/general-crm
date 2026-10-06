@@ -13,7 +13,8 @@
     "@leaddesk/connector-google-sheets": "workspace:*",
     "@leaddesk/connector-whatsapp-cloud": "workspace:*",
     "@leaddesk/connector-sms-msg91": "workspace:*",
-    "@leaddesk/connector-telephony-exotel": "workspace:*"
+    "@leaddesk/connector-telephony-exotel": "workspace:*",
+    "@leaddesk/connector-ai-groq": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0"
