@@ -22,7 +22,7 @@ beforeAll(async () => {
   const { IngressModule } = await import('../src/ingress.module'); const { INBOX_QUEUE } = await import('../src/inbox-queue'); const { configureIngress } = await import('../src/setup');
   const { TENANT_DB } = await import('@leaddesk/platform');
   const mod = await Test.createTestingModule({ imports: [IngressModule] }).overrideProvider(INBOX_QUEUE).useValue({ enqueue: async () => undefined }).compile();
-  const cfg = rateConfigFromEnv({ RATE_LIMIT_SCALE: '0.01' } as any); // webhook 12/min per connection
+  const cfg = rateConfigFromEnv({ RATE_LIMIT_SCALE: '0.002' } as any); // webhook: 12 per minute per connection
   app = configureIngress(mod.createNestApplication({ rawBody: true }), { store: new MemoryRateStore(), cfg }); await app.init(); http = app.getHttpServer();
   const db: any = mod.get(TENANT_DB);
   const tenant: any = await runAsSystem('test', () => db.models.Tenant.create({ name: 'T', slug: 't' })); const tenantId = String(tenant._id); const connId = String(newObjectId());

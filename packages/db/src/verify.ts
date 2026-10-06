@@ -1,6 +1,6 @@
 import type { Db } from 'mongodb';
 import { GLOBAL_COLLECTIONS } from './models';
-import { INDEXES } from './indexes';
+import { INDEXES, INDEXES_V2 } from './indexes';
 import { MIGRATIONS } from './migrations';
 
 export interface VerifyReport { ok: boolean; problems: string[]; counts: Record<string, number>; tenantsWithData: number }
@@ -15,7 +15,7 @@ export async function verifyDatabase(db: Db, o: { expectMinTenants?: number } = 
   const applied = new Set((await db.collection('changelog').find().toArray()).map((d: any) => d.fileName));
   for (const m of MIGRATIONS) if (!applied.has(m.id)) problems.push(`migration not applied: ${m.id}`);
   const have = new Map<string, any[]>();
-  for (const i of INDEXES) {
+  for (const i of [...INDEXES, ...INDEXES_V2]) {
     if (!have.has(i.collection)) have.set(i.collection, await db.collection(i.collection).indexes().catch(() => []));
     if (!have.get(i.collection)!.some((x: any) => sameKeys(x.key, i.keys))) problems.push(`missing index on ${i.collection}: ${JSON.stringify(i.keys)}`);
   }

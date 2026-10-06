@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ApiError, api, logout, openStream, refresh } from '../../lib/api';
+import { ApiError, api, getToken, logout, openStream, refresh } from '../../lib/api';
 import { KIND_LABEL } from '../../lib/format';
 import { OutcomeSheet, type Outcome, type SheetTarget, type Suggestion } from '../../components/OutcomeSheet';
 
@@ -35,7 +35,7 @@ export default function Today() {
 
   const say = useCallback((m: string) => { setToast(m); setTimeout(() => setToast((t) => (t === m ? null : t)), 4000); }, []);
   const load = useCallback(async () => {
-    try { setQueue(await api<Queue>('/v1/do/queue')); setError(null); setGoal(await api<Goal>('/v1/pulse/me').catch(() => null)); }
+    try { setQueue(await api<Queue>('/v1/do/queue')); setError(null); void api<Goal>('/v1/pulse/me').then(setGoal).catch(() => undefined); } // the goal ring never delays the list
     catch (e) { if (e instanceof ApiError && e.status === 401) router.replace('/login'); else setError('Could not load your leads. Retrying…'); }
   }, [router]);
 
@@ -43,12 +43,14 @@ export default function Today() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      if (!(await refresh())) { router.replace('/login'); return; }
+      if (!getToken() && !(await refresh())) { router.replace('/login'); return; } // arriving from the login screen already has a token
       if (!alive) return;
       setReady(true);
-      setOutcomes(await api<Outcome[]>('/v1/outcomes').catch(() => []));
-      setRole((await api<{ role: string }>('/v1/me').catch(() => ({ role: 'agent' }))).role);
-      await load();
+      // everything the first screen needs is fetched in parallel, the queue first
+      const q = load();
+      void api<Outcome[]>('/v1/outcomes').then(setOutcomes).catch(() => undefined);
+      void api<{ role: string }>('/v1/me').then((m) => setRole(m.role)).catch(() => undefined);
+      await q;
     })();
     return () => { alive = false; };
   }, [router, load]);

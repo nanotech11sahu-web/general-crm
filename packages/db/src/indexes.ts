@@ -95,6 +95,23 @@ export const INDEXES: Idx[] = [
   { collection: 'counters', keys: { tenantId: 1, key: 1 }, options: { unique: true } },
 ];
 
+/**
+ * Added after the first release candidate by the audit in apps/api/test/perf.test.ts. Always add new indexes here (and a
+ * migration), never to INDEXES, so databases that already ran the init migration receive them.
+ */
+export const INDEXES_V2: Idx[] = [
+  // newest-first lists sort by _id: without these the planner may walk the whole _id index across all tenants
+  { collection: 'leads', keys: { tenantId: 1, deletedAt: 1, _id: -1 }, options: { name: 'v2_leads_tenant_deleted_id' } },
+  { collection: 'leads', keys: { tenantId: 1, ownerId: 1, deletedAt: 1, _id: -1 }, options: { name: 'v2_leads_owner_deleted_id' } },
+  // inbound replies queue: ordered by last inbound, only conversations with something unread
+  { collection: 'conversations', keys: { tenantId: 1, lastInboundAt: 1 }, options: { name: 'v2_conversations_unread', partialFilterExpression: { unreadCount: { $gt: 0 } } } },
+  // Pulse / health windows that are not scoped by assignee or lead
+  { collection: 'tasks', keys: { tenantId: 1, dueAt: 1 }, options: { name: 'v2_tasks_tenant_due' } },
+  { collection: 'tasks', keys: { tenantId: 1, status: 1, dueAt: 1 }, options: { name: 'v2_tasks_tenant_status_due' } },
+  { collection: 'messages', keys: { tenantId: 1, direction: 1, createdAt: -1 }, options: { name: 'v2_messages_direction_created' } },
+  { collection: 'callsessions', keys: { tenantId: 1, startedAt: -1 }, options: { name: 'v2_calls_tenant_started' } },
+];
+
 export const COLLECTIONS = [...new Set(INDEXES.map((i) => i.collection))];
 
 export async function ensureCollections(db: Db) {
@@ -102,6 +119,6 @@ export async function ensureCollections(db: Db) {
   for (const c of COLLECTIONS) if (!existing.has(c)) await db.createCollection(c);
 }
 
-export async function createIndexes(db: Db) {
-  for (const i of INDEXES) await db.collection(i.collection).createIndex(i.keys, i.options ?? {});
+export async function createIndexes(db: Db, list: Idx[] = INDEXES) {
+  for (const i of list) await db.collection(i.collection).createIndex(i.keys, i.options ?? {});
 }
