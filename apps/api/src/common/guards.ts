@@ -20,20 +20,29 @@ export const CurrentUser = createParamDecorator((_: unknown, ctx: ExecutionConte
  */
 @Injectable()
 export class MembershipCache {
-  private readonly m = new Map<string, { active: boolean; exp: number }>();
+  private readonly m = new Map<string, { active: boolean; needs2fa: boolean; exp: number }>();
   private readonly ttlMs = 10_000;
   constructor(@Inject(TENANT_DB) private readonly db: TenantDb) {}
   invalidate(membershipId: string) { this.m.delete(membershipId); }
   /** Operator actions (suspend) take effect on this instance immediately; other instances converge within the TTL. */
   clear() { this.m.clear(); }
-  async isActive(tenantId: string, membershipId: string): Promise<boolean> {
+  async isActive(tenantId: string, membershipId: string): Promise<boolean> { return (await this.check(tenantId, membershipId)).active; }
+  /** Active membership + whether the workspace's two-factor policy still applies to this person. */
+  async check(tenantId: string, membershipId: string): Promise<{ active: boolean; needs2fa: boolean }> {
     const hit = this.m.get(membershipId);
-    if (hit && hit.exp > Date.now()) return hit.active;
+    if (hit && hit.exp > Date.now()) return hit;
     const row: any = await runWithTenant(tenantId, () => this.db.repos.memberships.findOne({ _id: membershipId }));
-    const tenant: any = await this.db.models.Tenant.findById(tenantId, { status: 1 }).lean().exec(); // suspended / deleting workspaces lose access within the cache TTL
+    const tenant: any = await this.db.models.Tenant.findById(tenantId, { status: 1, settings: 1 }).lean().exec(); // suspended / deleting workspaces lose access within the cache TTL
     const active = row?.status === 'active' && (!tenant?.status || tenant.status === 'active');
-    this.m.set(membershipId, { active, exp: Date.now() + this.ttlMs });
-    return active;
+    let needs2fa = false;
+    const roles: string[] = tenant?.settings?.security?.require2faRoles ?? [];
+    if (active && roles.includes(row.role)) {
+      const u: any = await this.db.models.User.findById(row.userId, { totp: 1, passkeys: 1 }).lean().exec();
+      needs2fa = !(u?.totp?.enabledAt || (u?.passkeys ?? []).length > 0);
+    }
+    const v = { active, needs2fa, exp: Date.now() + this.ttlMs };
+    this.m.set(membershipId, v);
+    return v;
   }
 }
 
@@ -48,12 +57,29 @@ export class JwtAuthGuard implements CanActivate {
     if (!header?.startsWith('Bearer ')) throw new UnauthorizedException();
     try {
       const p = await this.jwt.verifyAsync(header.slice(7), { secret: process.env.JWT_ACCESS_SECRET });
-      if (!(await this.members.isActive(p.tid, p.mid))) throw new Error('inactive');
-      req.user = { userId: p.sub, tenantId: p.tid, role: p.role, membershipId: p.mid } satisfies AuthUser;
+      const m = await this.members.check(p.tid, p.mid);
+      if (!m.active) throw new Error('inactive');
+      req.user = { userId: p.sub, tenantId: p.tid, role: p.role, membershipId: p.mid, ...(m.needs2fa ? { needs2fa: true } : {}) } satisfies AuthUser;
       return true;
     } catch {
       throw new UnauthorizedException();
     }
+  }
+}
+
+export const PRE_2FA = 'allow_pre_2fa';
+/** Routes a person may use while the workspace is waiting for them to set up two-factor (their account, never workspace data). */
+export const AllowPre2fa = () => SetMetadata(PRE_2FA, true);
+
+/** The workspace requires two-factor for this role and the person has none yet: only account-security routes work until they add one. */
+@Injectable()
+export class TwoFactorGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+  canActivate(ctx: ExecutionContext) {
+    const user: AuthUser | undefined = ctx.switchToHttp().getRequest().user;
+    if (!user?.needs2fa) return true;
+    if (this.reflector.getAllAndOverride<boolean>(PRE_2FA, [ctx.getHandler(), ctx.getClass()])) return true;
+    throw new ForbiddenException({ code: 'two_factor_required', message: 'Your workspace requires two-factor authentication for your role. Set it up under Security to continue.' });
   }
 }
 

@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { createLogger, Metrics, type Logger } from '@leaddesk/platform';
+import { createLogger, errorTracker, Metrics, type Logger } from '@leaddesk/platform';
 
 /** Wraps a job so every run records duration, success time and failures (alerts key off "last success" age). */
 export function instrument<T>(metrics: Metrics, log: Logger, name: string, fn: () => Promise<T>, now: () => number = Date.now) {
@@ -14,6 +14,7 @@ export function instrument<T>(metrics: Metrics, log: Logger, name: string, fn: (
     } catch (e) {
       metrics.counter('leaddesk_job_failures_total', 'Failed job runs', { job: name });
       log.error('job failed', { job: name, error: String((e as Error)?.message ?? e).slice(0, 300) });
+      errorTracker().capture(e, { job: name });
       throw e;
     }
   };

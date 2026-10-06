@@ -17,7 +17,7 @@ import { AiSweeper } from './ai-sweeper';
 import { OpsSweeper } from './ops-sweeper';
 import { BillingService, MailSweeper, NullMailer, RetentionService, objectStoreFromEnv, paymentProviderFromEnv } from '@leaddesk/domain';
 import { instrument, startMetricsServer, workerLogger } from './observability';
-import { Metrics, createSmtpMailer, validateEnv } from '@leaddesk/platform';
+import { Metrics, createSmtpMailer, errorTracker, initErrorTracking, validateEnv } from '@leaddesk/platform';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
@@ -26,6 +26,8 @@ class WorkerModule {}
 async function bootstrap() {
   const problems = validateEnv(process.env);
   if (problems.length) { for (const p of problems) console.error(`config: ${p}`); throw new Error('Refusing to start with an unsafe configuration'); }
+  initErrorTracking('worker'); // inert unless SENTRY_DSN is set
+  process.on('unhandledRejection', (e) => { errorTracker().capture(e, { kind: 'unhandledRejection' }); console.error(e); });
   const metrics = new Metrics(); const log = workerLogger();
   const app = await NestFactory.createApplicationContext(WorkerModule);
   const redisUrl = process.env.REDIS_URL;

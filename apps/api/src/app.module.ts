@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
-import { CommonModule, JwtAuthGuard, PermissionGuard } from './common/guards';
+import { CommonModule, JwtAuthGuard, PermissionGuard, TwoFactorGuard } from './common/guards';
 import { UsersModule } from './users/users.module';
 import { TenantContextInterceptor } from './common/tenant-context.interceptor';
 import { ConnectionsModule } from './connections/connections.module';
@@ -30,6 +30,7 @@ import { HardeningModule, RateLimitGuard } from './hardening/hardening.module';
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },
+    { provide: APP_GUARD, useClass: TwoFactorGuard },
     { provide: APP_GUARD, useClass: SubscriptionGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },

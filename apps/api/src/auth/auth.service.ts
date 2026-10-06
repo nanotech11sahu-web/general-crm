@@ -2,7 +2,7 @@ import { ConflictException, Inject, Injectable, UnauthorizedException, BadReques
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { createHash, randomBytes } from 'node:crypto';
-import { runAsSystem, runWithTenant, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
+import { requireTenantId, runAsSystem, runWithTenant, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
 import type { Role } from '@leaddesk/shared';
 import { BillingService, emails, prefsOf, seedPreset, type Mailer } from '@leaddesk/domain';
 import { AuditService } from '../audit/audit.service';
@@ -12,6 +12,8 @@ import type { RateConfig, RateStore } from '@leaddesk/platform';
 import { openSecret, sealSecret, type KeyService } from '@leaddesk/crypto';
 import { RATE_CONFIG, RATE_STORE } from '../hardening/hardening.module';
 import { MAILER } from '../mail/mail.module';
+import { MembershipCache } from '../common/guards';
+import { PasskeyService } from './passkeys';
 import { newTotpSecret, otpauthUrl, verifyTotp } from './totp';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -33,6 +35,8 @@ export class AuthService {
     @Inject(RATE_STORE) private readonly rates: RateStore,
     @Inject(RATE_CONFIG) private readonly cfg: RateConfig,
     @Inject(MAILER) private readonly mailer: Mailer,
+    private readonly members: MembershipCache,
+    private readonly passkeys: PasskeyService,
   ) {}
 
   private appUrl() { return (process.env.PUBLIC_APP_URL ?? 'http://localhost:3400').replace(/\/$/, ''); }
@@ -71,7 +75,7 @@ export class AuthService {
     await Promise.all([this.rates.hit(k.a, w), this.rates.hit(k.b, w)]);
   }
 
-  async login(i: { email: string; password: string; tenantId?: string; totp?: string }, ip = 'unknown'): Promise<Tokens> {
+  async login(i: { email: string; password: string; tenantId?: string; totp?: string; passkey?: { challengeToken: string; response: any } }, ip = 'unknown'): Promise<Tokens> {
     const email = i.email.toLowerCase();
     await this.assertNotLocked(email, ip);
     const user: any = await this.sys.findUserByEmail(email);
@@ -81,7 +85,12 @@ export class AuthService {
     const memberships: any[] = await this.sys.listMemberships(user._id);
     const m = i.tenantId ? memberships.find((x) => String(x.tenantId) === i.tenantId) : memberships[0];
     if (!m) throw new UnauthorizedException('No active membership');
-    if (user.totp?.enabledAt) {
+    const hasTotp = !!user.totp?.enabledAt; const hasPasskey = (user.passkeys ?? []).length > 0;
+    if (i.passkey && hasPasskey) {
+      if (!(await this.passkeys.verifyLogin(user, i.passkey))) { await this.recordFailure(email, ip); throw new UnauthorizedException({ code: 'passkey_invalid', message: 'That passkey did not work' }); }
+    } else if (hasPasskey && !(hasTotp && i.totp)) {
+      throw new UnauthorizedException({ code: 'second_factor_required', message: 'Confirm it is you', methods: [...(hasTotp ? ['totp'] : []), 'passkey'], passkey: await this.passkeys.loginOptions(user) });
+    } else if (hasTotp) {
       if (!i.totp) throw new UnauthorizedException({ code: 'totp_required', message: 'Enter the code from your authenticator app' });
       if (!(await this.checkSecondFactor(user, i.totp))) { await this.recordFailure(email, ip); throw new UnauthorizedException({ code: 'totp_invalid', message: 'That code did not work' }); }
     }
@@ -92,6 +101,20 @@ export class AuthService {
       await this.audit.record({ action: 'auth.login', entity: 'user', entityId: String(user._id) });
       return this.issue(String(user._id), String(m.tenantId), m.role, String(m._id));
     });
+  }
+
+  // ---------- workspace two-factor policy ----------
+  async securityPolicy() { const t: any = await this.db.models.Tenant.findById(requireTenantId(), { settings: 1 }).lean().exec(); return { require2faRoles: (t?.settings?.security?.require2faRoles ?? []) as Role[] }; }
+  async setSecurityPolicy(u: { userId: string; role: Role }, roles: Role[]) {
+    const uniq = [...new Set(roles)];
+    if (uniq.includes(u.role)) {
+      const me: any = await this.db.models.User.findById(u.userId, { totp: 1, passkeys: 1 }).lean().exec();
+      if (!(me?.totp?.enabledAt || (me?.passkeys ?? []).length)) throw new DomainError('enable_2fa_first', 'Turn on two-factor for your own account first, so this cannot lock you out', undefined, 409);
+    }
+    await this.db.models.Tenant.updateOne({ _id: requireTenantId() }, uniq.length ? { $set: { 'settings.security.require2faRoles': uniq } } : { $unset: { 'settings.security.require2faRoles': 1 } });
+    this.members.clear();
+    await this.audit.record({ action: 'security.policy_changed', entity: 'tenant', meta: { require2faRoles: uniq } });
+    return this.securityPolicy();
   }
 
   // ---------- TOTP two-factor ----------
@@ -126,6 +149,7 @@ export class AuthService {
     if (step === null) throw new DomainError('totp_invalid', 'That code did not match. Check your authenticator app clock.', undefined, 422);
     const recovery = Array.from({ length: 10 }, () => { const r = randomBytes(8).toString('hex'); return `${r.slice(0, 5)}-${r.slice(5, 10)}`; });
     await this.db.models.User.updateOne({ _id: userId }, { $set: { totp: { secret: user.totpPending, enabledAt: new Date(), lastStep: step }, recoveryHashes: recovery.map((c) => sha256(c)) }, $unset: { totpPending: 1 } });
+    this.members.clear();
     await this.audit.record({ action: 'auth.2fa_enabled', entity: 'user', entityId: userId });
     return { recoveryCodes: recovery }; // shown once
   }
@@ -134,6 +158,7 @@ export class AuthService {
     if (!user?.totp?.enabledAt) throw new DomainError('totp_not_enabled', 'Two-factor is not on', undefined, 409);
     if (!(await argon2.verify(user.passwordHash, password)) || !(await this.checkSecondFactor(user, code))) throw new UnauthorizedException('Password or code is wrong');
     await this.db.models.User.updateOne({ _id: userId }, { $unset: { totp: 1, totpPending: 1, recoveryHashes: 1 } });
+    this.members.clear();
     await this.audit.record({ action: 'auth.2fa_disabled', entity: 'user', entityId: userId });
     return { ok: true };
   }

@@ -30,7 +30,7 @@ async function main() {
   const c = await MongoClient.connect(url); await migrateUp(c.db()); await c.close();
   const api = spawn('node', ['-r', '@swc-node/register', 'src/main.ts'], {
     cwd: resolve(__dirname, '..'),
-    env: { ...process.env, MONGO_URL: url, PORT: String(PORT), JWT_ACCESS_SECRET: 'e2e-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), REALTIME_POLL_MS: '200', RATE_LIMIT_SCALE: '50', NODE_ENV: 'test', MAIL_CAPTURE_FILE: MAIL_FILE, PUBLIC_APP_URL: 'http://127.0.0.1:3400' },
+    env: { ...process.env, MONGO_URL: url, PORT: String(PORT), JWT_ACCESS_SECRET: 'e2e-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), REALTIME_POLL_MS: '200', RATE_LIMIT_SCALE: '50', NODE_ENV: 'test', MAIL_CAPTURE_FILE: MAIL_FILE, PUBLIC_APP_URL: 'http://127.0.0.1:3400', CORS_ORIGINS: 'http://localhost:3400', WEBAUTHN_ORIGIN: 'http://localhost:3400', WEBAUTHN_RP_ID: 'localhost' },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const shutdown = async () => { api.kill('SIGTERM'); await rs.stop().catch(() => undefined); process.exit(0); };

@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { startRegistration } from '@simplewebauthn/browser';
 import { ApiError, api, logout, refresh } from '../../lib/api';
 
 /** Own account: two-factor, password, sign out everywhere. */
@@ -8,15 +9,25 @@ export default function Security() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [msg, setMsg] = useState<string | null>(null);
   const [setup, setSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null); const [code, setCode] = useState(''); const [recovery, setRecovery] = useState<string[] | null>(null);
+  const [keys, setKeys] = useState<{ id: string; name: string; createdAt: string; lastUsedAt: string | null }[]>([]); const [keyName, setKeyName] = useState(''); const [role, setRole] = useState(''); const [policy, setPolicy] = useState<string[] | null>(null); const [required, setRequired] = useState(false);
   const [prefs, setPrefs] = useState<{ alerts: boolean; digest: boolean; emailEnabled: boolean } | null>(null);
   const [cur, setCur] = useState(''); const [next, setNext] = useState(''); const [pw2, setPw2] = useState(''); const [dis, setDis] = useState('');
-  useEffect(() => { (async () => { if (!(await refresh())) router.replace('/login'); else { setReady(true); api<{ alerts: boolean; digest: boolean; emailEnabled: boolean }>('/v1/me/email-preferences').then(setPrefs).catch(() => undefined); } })(); }, [router]);
+  useEffect(() => { (async () => { if (!(await refresh())) router.replace('/login'); else { setReady(true); api<typeof keys>('/v1/auth/passkeys').then(setKeys).catch(() => undefined); setRequired(new URLSearchParams(window.location.search).has('required')); api<{ role: string }>('/v1/me').then((m) => { setRole(m.role); if (m.role === 'owner') api<{ require2faRoles: string[] }>('/v1/security/policy').then((p) => setPolicy(p.require2faRoles)).catch(() => undefined); }).catch(() => undefined); api<{ alerts: boolean; digest: boolean; emailEnabled: boolean }>('/v1/me/email-preferences').then(setPrefs).catch(() => undefined); } })(); }, [router]);
   const run = async (fn: () => Promise<void>, ok: string) => { setMsg(null); try { await fn(); setMsg(ok); } catch (e) { setMsg(e instanceof ApiError ? e.message : 'Something went wrong'); } };
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
       <div className="bar"><h1>Security</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
       {msg && <p className="reason" role="status">{msg}</p>}
+      {required && <p className="err" role="alert" data-testid="2fa-required">Your workspace requires two-factor authentication for your role. Set it up below to continue.</p>}
+      <section className="card" data-testid="passkeys"><h2>Passkeys</h2>
+        <p className="reason">Sign in with your fingerprint, face or a security key instead of typing a code. Passkeys count as two-factor.</p>
+        <ul className="list">{keys.map((k) => (<li key={k.id}><span><b>{k.name}</b><br /><span className="reason">Added {new Date(k.createdAt).toLocaleDateString()}{k.lastUsedAt ? ` · last used ${new Date(k.lastUsedAt).toLocaleDateString()}` : ''}</span></span><span><button style={{ minHeight: 32, padding: '0 10px' }} onClick={() => { const pw = window.prompt('Confirm with your password to remove this passkey'); if (pw) void run(async () => setKeys(await api(`/v1/auth/passkeys/${encodeURIComponent(k.id)}/remove`, { method: 'POST', body: { password: pw } })), 'Passkey removed'); }}>Remove</button></span></li>))}</ul>
+        <div className="row"><input aria-label="Passkey name" placeholder="Name it (e.g. Work laptop)" value={keyName} onChange={(e) => setKeyName(e.target.value)} style={{ flex: 1 }} />
+          <button className="primary" onClick={() => run(async () => { const { options, challengeToken } = await api<{ options: any; challengeToken: string }>('/v1/auth/passkeys/register/options', { method: 'POST' }); const response = await startRegistration({ optionsJSON: options }); setKeys(await api('/v1/auth/passkeys/register/verify', { method: 'POST', body: { challengeToken, response, name: keyName } })); setKeyName(''); }, 'Passkey added')}>Add a passkey</button></div></section>
+      {role === 'owner' && policy && (<section className="card" data-testid="2fa-policy"><h2>Require two-factor for your team</h2>
+        <p className="reason">People in the roles you tick can only reach this page until they have set up an authenticator app (or a passkey). Turn it on for yourself first.</p>
+        {(['owner', 'admin', 'manager', 'agent'] as const).map((r) => (<label key={r} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 16, color: 'inherit' }}><input type="checkbox" style={{ width: 20, minHeight: 20 }} checked={policy.includes(r)} onChange={(e) => { const next = e.target.checked ? [...policy, r] : policy.filter((x) => x !== r); void run(async () => { const res = await api<{ require2faRoles: string[] }>('/v1/security/policy', { method: 'PUT', body: { require2faRoles: next } }); setPolicy(res.require2faRoles); }, 'Saved'); }} />{r === 'owner' ? 'Owners' : r === 'admin' ? 'Admins' : r === 'manager' ? 'Managers' : 'Agents'}</label>))}</section>)}
       {prefs && (<section className="card" data-testid="email-notices"><h2>Email notices</h2>
         {!prefs.emailEnabled && <p className="reason">Email is not set up on this deployment, so nothing is sent yet.</p>}
         {(['alerts', 'digest'] as const).map((k) => (<label key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 16, color: 'inherit' }}><input type="checkbox" style={{ width: 20, minHeight: 20 }} checked={prefs[k]} onChange={(e) => run(async () => setPrefs(await api('/v1/me/email-preferences', { method: 'POST', body: { [k]: e.target.checked } })), 'Saved')} />{k === 'alerts' ? 'Connection problems (billing notices are always sent to owners and admins)' : 'Daily lead digest (managers and admins)'}</label>))}

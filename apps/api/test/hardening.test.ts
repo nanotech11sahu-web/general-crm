@@ -194,3 +194,91 @@ describe('OpenAPI', () => {
     expect(Object.keys(doc.paths).length).toBeGreaterThan(100);
   });
 });
+
+describe('workspace two-factor policy', () => {
+  it('owner can require two-factor for roles; those people can only reach account security until they set it up; the owner cannot lock themselves out', async () => {
+    const o = await signup('pol-owner');
+    const inv = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'pol-admin@x.io', role: 'admin' }).expect(201);
+    const inv2 = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'pol-agent@x.io', role: 'agent' }).expect(201);
+    const admin = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'pa', password: 'agent-pass-123' }).expect(201)).body.accessToken as string;
+    const agent = (await request(http).post(`/v1/invitations/${inv2.body.inviteToken}/accept`).send({ name: 'pg', password: 'agent-pass-123' }).expect(201)).body.accessToken as string;
+    expect((await request(http).get('/v1/security/policy').set(auth(o.token)).expect(200)).body).toEqual({ require2faRoles: [] });
+    await request(http).put('/v1/security/policy').set(auth(admin)).send({ require2faRoles: ['admin'] }).expect(403); // owner only
+    await request(http).put('/v1/security/policy').set(auth(o.token)).send({ require2faRoles: ['boss'] }).expect(400);
+    await request(http).put('/v1/security/policy').set(auth(o.token)).send({ require2faRoles: ['owner', 'admin'] }).expect(409).expect((r) => expect(r.body.code).toBe('enable_2fa_first')); // would lock the owner out
+    // the owner turns 2FA on for themselves, then the policy
+    const setup = (await request(http).post('/v1/auth/2fa/setup').set(auth(o.token)).expect(201)).body; const stepNow = () => Math.floor(Date.now() / 30_000);
+    await request(http).post('/v1/auth/2fa/enable').set(auth(o.token)).send({ code: hotp(base32Decode(setup.secret), stepNow()) }).expect(201);
+    await request(http).put('/v1/security/policy').set(auth(o.token)).send({ require2faRoles: ['owner', 'admin'] }).expect(200).expect((r) => expect(r.body.require2faRoles).toEqual(['owner', 'admin']));
+    const { MembershipCache } = await import('../src/common/guards'); app.get(MembershipCache).clear();
+    // the owner is fine; the admin without a second factor is held at account security; the agent is not covered
+    await request(http).get('/v1/leads').set(auth(o.token)).expect(200);
+    await request(http).get('/v1/leads').set(auth(admin)).expect(403).expect((r) => expect(r.body.code).toBe('two_factor_required'));
+    expect((await request(http).get('/v1/me').set(auth(admin)).expect(200)).body.needs2fa).toBe(true);
+    await request(http).get('/v1/billing/status').set(auth(admin)).expect(403);
+    await request(http).get('/v1/leads').set(auth(agent)).expect(200);
+    const asetup = (await request(http).post('/v1/auth/2fa/setup').set(auth(admin)).expect(201)).body; // account security stays reachable
+    await request(http).post('/v1/auth/2fa/enable').set(auth(admin)).send({ code: hotp(base32Decode(asetup.secret), stepNow()) }).expect(201);
+    await request(http).get('/v1/leads').set(auth(admin)).expect(200); // enabling releases them at once (cache cleared on this instance)
+    expect((await request(http).get('/v1/me').set(auth(admin)).expect(200)).body.needs2fa).toBeUndefined();
+    // turning the policy off releases everyone; a role can also be removed
+    await request(http).put('/v1/security/policy').set(auth(o.token)).send({ require2faRoles: [] }).expect(200);
+    expect((await request(http).get('/v1/security/policy').set(auth(o.token)).expect(200)).body.require2faRoles).toEqual([]);
+  });
+});
+
+describe('passkeys (WebAuthn) as a second factor', () => {
+  const RP = 'app.example.test'; const ORIGIN = 'https://app.example.test'; // hardening.test sets PUBLIC_APP_URL
+  it('register with a (software) authenticator, sign in with it, and refuse replays, wrong origins, other users\' keys and stale counters', async () => {
+    const { SoftKey } = await import('./softkey');
+    const a = await signup('pk-a'); const b = await signup('pk-b');
+    const key = new SoftKey();
+    const reg = (await request(http).post('/v1/auth/passkeys/register/options').set(auth(a.token)).expect(200)).body;
+    expect(reg.options).toMatchObject({ rp: { id: RP, name: 'LeadDesk' }, attestation: 'none' }); expect(reg.challengeToken).toBeTruthy();
+    await request(http).post('/v1/auth/passkeys/register/verify').set(auth(a.token)).send({ challengeToken: reg.challengeToken, response: key.register(RP, 'https://evil.example', reg.options.challenge) }).expect(400); // wrong origin
+    const reg2 = (await request(http).post('/v1/auth/passkeys/register/options').set(auth(a.token)).expect(200)).body;
+    await request(http).post('/v1/auth/passkeys/register/verify').set(auth(b.token)).send({ challengeToken: reg2.challengeToken, response: key.register(RP, ORIGIN, reg2.options.challenge) }).expect(400); // someone else's challenge
+    const att = key.register(RP, ORIGIN, reg2.options.challenge);
+    const list = (await request(http).post('/v1/auth/passkeys/register/verify').set(auth(a.token)).send({ challengeToken: reg2.challengeToken, response: att, name: 'Dev laptop' }).expect(200)).body;
+    expect(list).toEqual([expect.objectContaining({ name: 'Dev laptop', lastUsedAt: null })]); expect(JSON.stringify(list)).not.toContain('publicKey');
+    await request(http).post('/v1/auth/passkeys/register/verify').set(auth(a.token)).send({ challengeToken: reg2.challengeToken, response: att }).expect(400); // the challenge is single use
+
+    await clearIp();
+    const attempt = (b2: Record<string, unknown> = {}) => request(http).post('/v1/auth/login').send({ email: 'pk-a@x.io', password: 'correct-horse-9', ...b2 });
+    const first = await attempt(); expect(first.status).toBe(401); expect(first.body.code).toBe('second_factor_required');
+    expect(first.body.details.methods).toEqual(['passkey']); expect(first.body.details.passkey.options.allowCredentials).toEqual([expect.objectContaining({ id: key.id.toString('base64url') })]);
+    const ok = await attempt({ passkey: { challengeToken: first.body.details.passkey.challengeToken, response: key.assert(RP, ORIGIN, first.body.details.passkey.options.challenge) } });
+    expect(ok.status).toBe(200); expect(ok.body.accessToken).toBeTruthy();
+    // replay of the same signed response, and a fresh response on a spent challenge
+    const replay = await attempt({ passkey: { challengeToken: first.body.details.passkey.challengeToken, response: key.assert(RP, ORIGIN, first.body.details.passkey.options.challenge) } });
+    expect(replay.status).toBe(401); expect(replay.body.code).toBe('passkey_invalid');
+    // wrong origin (a phishing page cannot get a usable assertion), the other user's key, and a cloned authenticator (counter not moving forward)
+    await clearIp(); const second = (await attempt()).body.details.passkey;
+    expect((await attempt({ passkey: { challengeToken: second.challengeToken, response: key.assert(RP, 'https://evil.example', second.options.challenge) } })).status).toBe(401);
+    await clearIp(); const third = (await attempt()).body.details.passkey;
+    const stale = key.assert(RP, ORIGIN, third.options.challenge, { counter: 1 }); // the store already holds a higher counter
+    expect((await attempt({ passkey: { challengeToken: third.challengeToken, response: stale } })).status).toBe(401);
+    await clearIp(); const forth = (await attempt()).body.details.passkey; const other = new SoftKey();
+    expect((await attempt({ passkey: { challengeToken: forth.challengeToken, response: other.assert(RP, ORIGIN, forth.options.challenge) } })).status).toBe(401); // unknown credential
+    // password alone is still not enough, and a wrong password never reveals the passkey options
+    expect((await request(http).post('/v1/auth/login').send({ email: 'pk-a@x.io', password: 'wrong-password-1' })).body.details?.passkey).toBeUndefined();
+    // management: list, and removing needs the password
+    const id = key.id.toString('base64url');
+    await request(http).post(`/v1/auth/passkeys/${id}/remove`).set(auth(a.token)).send({ password: 'nope-nope-nope' }).expect(401);
+    expect((await request(http).get('/v1/auth/passkeys').set(auth(a.token)).expect(200)).body[0].lastUsedAt).not.toBeNull();
+    await request(http).post(`/v1/auth/passkeys/${id}/remove`).set(auth(b.token)).send({ password: 'correct-horse-9' }).expect(404); // not b's passkey
+    expect((await request(http).post(`/v1/auth/passkeys/${id}/remove`).set(auth(a.token)).send({ password: 'correct-horse-9' }).expect(200)).body).toEqual([]);
+    const { RATE_STORE } = await import('../src/hardening/hardening.module'); const store: any = app.get(RATE_STORE);
+    await clearIp(); for (const k of ['lf:pk-a@x.io|::ffff:127.0.0.1', 'lf:pk-a@x.io|127.0.0.1', 'lf:pk-a@x.io|::1', 'lf:pk-a@x.io']) await store.reset(k); // the failed attempts above counted toward the lockout
+    await attempt().then((r) => expect(r.status).toBe(200)); // back to password only
+  });
+
+  it('a passkey satisfies a workspace two-factor policy', async () => {
+    const { SoftKey } = await import('./softkey'); const { MembershipCache } = await import('../src/common/guards');
+    const o = await signup('pk-owner'); const key = new SoftKey();
+    const reg = (await request(http).post('/v1/auth/passkeys/register/options').set(auth(o.token)).expect(200)).body;
+    await request(http).post('/v1/auth/passkeys/register/verify').set(auth(o.token)).send({ challengeToken: reg.challengeToken, response: key.register(RP, ORIGIN, reg.options.challenge) }).expect(200);
+    await request(http).put('/v1/security/policy').set(auth(o.token)).send({ require2faRoles: ['owner'] }).expect(200); // allowed: the owner has a second factor (a passkey)
+    app.get(MembershipCache).clear(); await request(http).get('/v1/leads').set(auth(o.token)).expect(200);
+  });
+});

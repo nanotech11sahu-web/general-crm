@@ -1,8 +1,9 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
-import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Req, Res } from '@nestjs/common';
+import { IsArray, IsBoolean, IsEmail, IsIn, IsObject, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import type { Request, Response } from 'express';
 import { AuthService, Tokens } from './auth.service';
-import { CurrentUser, Public, RequirePermission } from '../common/guards';
+import { PasskeyService } from './passkeys';
+import { AllowPre2fa, CurrentUser, Public, RequirePermission } from '../common/guards';
 import { REFRESH_COOKIE } from '../common/constants';
 import { RateLimit } from '../hardening/hardening.module';
 import { AllowRestricted } from '../billing/billing.module';
@@ -21,6 +22,7 @@ class LoginDto {
   @IsString() @MaxLength(128) password!: string;
   @IsOptional() @IsString() tenantId?: string;
   @IsOptional() @IsString() @MaxLength(40) totp?: string;
+  @IsOptional() @IsObject() passkey?: { challengeToken: string; response: any };
 }
 class CodeDto { @IsString() @MinLength(6) @MaxLength(40) code!: string }
 class DisableDto { @IsString() @MaxLength(128) password!: string; @IsString() @MinLength(6) @MaxLength(40) code!: string }
@@ -30,6 +32,9 @@ class InviteDto {
   @IsIn(['admin', 'manager', 'agent']) role!: 'admin' | 'manager' | 'agent';
   @IsOptional() @IsString() teamId?: string;
 }
+class PolicyDto { @IsArray() @IsIn(['owner', 'admin', 'manager', 'agent'], { each: true }) require2faRoles!: ('owner' | 'admin' | 'manager' | 'agent')[] }
+class PasskeyRegDto { @IsString() @MaxLength(4000) challengeToken!: string; @IsObject() response!: any; @IsOptional() @IsString() @MaxLength(40) name?: string }
+class RemovePasskeyDto { @IsString() @MaxLength(128) password!: string }
 class ForgotDto { @IsEmail() @MaxLength(254) email!: string }
 class ResetDto { @IsString() @MinLength(20) @MaxLength(200) token!: string; @IsString() @MinLength(10) @MaxLength(128) password!: string }
 class EmailPrefsDto { @IsOptional() @IsBoolean() alerts?: boolean; @IsOptional() @IsBoolean() digest?: boolean }
@@ -46,7 +51,7 @@ function setRefresh(res: Response, t: Tokens) {
 
 @Controller('v1')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(private readonly auth: AuthService, private readonly passkeys: PasskeyService) {}
 
   @Public() @RateLimit('signup') @Post('auth/signup')
   async signup(@Body() b: SignupDto, @Res({ passthrough: true }) res: Response) { return setRefresh(res, await this.auth.signup(b)); }
@@ -59,6 +64,18 @@ export class AuthController {
 
   @Public() @RateLimit('reset') @Post('auth/reset') @HttpCode(200)
   reset(@Body() b: ResetDto) { return this.auth.resetPassword(b.token, b.password); }
+
+  /** Passkeys (WebAuthn): a second factor next to the password. Registering one also satisfies a workspace's two-factor policy. */
+  @AllowRestricted() @AllowPre2fa() @Post('auth/passkeys/register/options') @HttpCode(200) passkeyOptions(@CurrentUser() u: AuthUser) { return this.passkeys.registerOptions(u.userId); }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/passkeys/register/verify') @HttpCode(200) passkeyVerify(@CurrentUser() u: AuthUser, @Body() b: PasskeyRegDto) { return this.passkeys.registerVerify(u.userId, b); }
+  @AllowRestricted() @AllowPre2fa() @Get('auth/passkeys') passkeyList(@CurrentUser() u: AuthUser) { return this.passkeys.list(u.userId); }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/passkeys/:id/remove') @HttpCode(200) passkeyRemove(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: RemovePasskeyDto) { return this.passkeys.remove(u.userId, id, b.password); }
+
+  /** Which roles must use two-factor in this workspace. Owner only; people in those roles can only reach account security until they set it up. */
+  @AllowRestricted() @Get('security/policy') @RequirePermission('tenant.manage')
+  policy() { return this.auth.securityPolicy(); }
+  @AllowRestricted() @Put('security/policy') @RequirePermission('security.manage')
+  setPolicy(@CurrentUser() u: AuthUser, @Body() b: PolicyDto) { return this.auth.setSecurityPolicy(u, b.require2faRoles); }
 
   @AllowRestricted() @Get('me/email-preferences') emailPrefs(@CurrentUser() u: AuthUser) { return this.auth.emailPrefs(u.userId); }
   @AllowRestricted() @Post('me/email-preferences') @HttpCode(200) setEmailPrefs(@CurrentUser() u: AuthUser, @Body() b: EmailPrefsDto) { return this.auth.setEmailPrefs(u.userId, b); }
@@ -75,13 +92,13 @@ export class AuthController {
   }
 
   /** Two-factor (TOTP). Setup returns the secret once; enabling needs a valid code and returns single-use recovery codes. */
-  @AllowRestricted() @Post('auth/2fa/setup') totpSetup(@CurrentUser() u: AuthUser) { return this.auth.totpSetup(u.userId); }
-  @AllowRestricted() @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
-  @AllowRestricted() @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
-  @AllowRestricted() @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
-  @AllowRestricted() @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/2fa/setup') totpSetup(@CurrentUser() u: AuthUser) { return this.auth.totpSetup(u.userId); }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
 
-  @Get('me')
+  @AllowPre2fa() @Get('me')
   me(@CurrentUser() u: AuthUser) { return u; }
 
   @Post('invitations') @RequirePermission('users.invite')

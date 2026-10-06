@@ -92,3 +92,21 @@ test('forgot password: the same answer for anyone, the emailed link sets a new p
   await page.getByLabel('Email').fill(email); await page.getByLabel('Password').fill('first-password-1'); await page.getByRole('button', { name: 'Sign in' }).click(); await expect(page.getByText('Wrong email or password')).toBeVisible();
   await page.getByLabel('Password').fill('second-password-2'); await page.getByRole('button', { name: 'Sign in' }).click(); await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
 });
+
+test('passkey: add one from Security (virtual authenticator), then sign in with it', async ({ browser }) => {
+  // WebAuthn does not accept an IP address as the site, so this test uses localhost (the e2e API is configured for both)
+  const ctx = await browser.newContext({ baseURL: 'http://localhost:3400' }); const page = await ctx.newPage();
+  const cdp = await ctx.newCDPSession(page); await cdp.send('WebAuthn.enable');
+  await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+  const stamp = Date.now(); const email = `passkey-${stamp}@e2e.test`;
+  await page.goto('/signup'); await page.getByLabel('Business name').fill(`Passkey Co ${stamp}`); await page.getByLabel('Your name').fill('Pa Sskey'); await page.getByLabel('Work email').fill(email); await page.getByLabel(/Password/).fill('passkey-pass-123'); await page.getByRole('button', { name: 'Create workspace' }).click();
+  await expect(page.getByTestId('onboarding')).toBeVisible();
+  await page.goto('/security');
+  await page.getByLabel('Passkey name').fill('Test laptop'); await page.getByRole('button', { name: 'Add a passkey' }).click();
+  await expect(page.getByTestId('passkeys')).toContainText('Test laptop');
+  await page.goto('/security'); await page.getByRole('button', { name: 'Sign out everywhere' }).click().catch(() => undefined);
+  await page.goto('/login'); await page.waitForLoadState('networkidle');
+  await page.getByLabel('Email').fill(email); await page.getByLabel('Password').fill('passkey-pass-123'); await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByTestId('use-passkey').click();
+  await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+});

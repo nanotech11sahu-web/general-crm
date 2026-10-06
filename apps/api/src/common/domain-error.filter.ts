@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import { DomainError } from '@leaddesk/domain';
+import { errorTracker } from '@leaddesk/platform';
 
 /** Consistent error envelope: { code, message, details, requestId } (spec §16). */
 @Catch()
@@ -16,6 +17,7 @@ export class ErrorEnvelopeFilter implements ExceptionFilter {
       return res.status(e.getStatus()).json({ code: named ?? 'http_error', message: typeof body === 'string' ? body : body.message, details: typeof body === 'object' ? body : undefined, requestId });
     }
     this.log.error(e instanceof Error ? e.stack : String(e));
+    errorTracker().capture(e, { status: 500 }); // only genuinely unexpected failures reach here; 4xx are normal answers
     return res.status(500).json({ code: 'internal_error', message: 'Internal server error', requestId });
   }
 }

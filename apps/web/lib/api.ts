@@ -25,12 +25,13 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
   if (res.status === 401 && retry && (await refresh())) return api<T>(path, init, false);
   const text = await res.text();
   const body = text ? JSON.parse(text) : {};
+  if (res.status === 403 && body.code === 'two_factor_required' && typeof window !== 'undefined' && !window.location.pathname.startsWith('/security')) { window.location.assign('/security?required=1'); } // the workspace needs this person to set up two-factor first
   if (!res.ok) throw new ApiError(res.status, body.code ?? 'error', Array.isArray(body.message) ? body.message.join(', ') : body.message ?? res.statusText, body.details);
   return body as T;
 }
 
-export async function login(email: string, password: string, totp?: string) {
-  const r = await api<{ accessToken: string }>('/v1/auth/login', { method: 'POST', body: { email, password, ...(totp ? { totp } : {}) } }, false);
+export async function login(email: string, password: string, totp?: string, passkey?: { challengeToken: string; response: unknown }) {
+  const r = await api<{ accessToken: string }>('/v1/auth/login', { method: 'POST', body: { email, password, ...(totp ? { totp } : {}), ...(passkey ? { passkey } : {}) } }, false);
   token = r.accessToken;
 }
 export async function logout() { await fetch('/v1/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined); token = null; }

@@ -35,6 +35,7 @@ export function buildModels(conn: Connection) {
     totp: Schema.Types.Mixed,        // { secret: {ciphertext, wrappedDek, keyRef}, enabledAt, lastStep } — secret sealed with the key service
     totpPending: Schema.Types.Mixed, // set by setup, promoted by a valid first code
     recoveryHashes: [String],        // sha256 of single-use recovery codes
+    passkeys: [Schema.Types.Mixed],  // WebAuthn credentials: { id, publicKey, counter, transports, name, createdAt, lastUsedAt }
     status: { type: String, enum: ['active', 'disabled'], default: 'active' },
   }, { global: true });
 
