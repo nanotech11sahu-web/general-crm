@@ -4,18 +4,20 @@ import * as argon2 from 'argon2';
 import { createHash, randomBytes } from 'node:crypto';
 import { runAsSystem, runWithTenant, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
 import type { Role } from '@leaddesk/shared';
-import { BillingService, seedPreset } from '@leaddesk/domain';
+import { BillingService, emails, prefsOf, seedPreset, type Mailer } from '@leaddesk/domain';
 import { AuditService } from '../audit/audit.service';
 import { KEY_SERVICE, SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
 import { DomainError } from '@leaddesk/domain';
 import type { RateConfig, RateStore } from '@leaddesk/platform';
 import { openSecret, sealSecret, type KeyService } from '@leaddesk/crypto';
 import { RATE_CONFIG, RATE_STORE } from '../hardening/hardening.module';
+import { MAILER } from '../mail/mail.module';
 import { newTotpSecret, otpauthUrl, verifyTotp } from './totp';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const newToken = (tenantId: string) => `${tenantId}.${randomBytes(32).toString('base64url')}`;
 const ROLE_RANK: Record<Role, number> = { agent: 0, manager: 1, admin: 2, owner: 3 };
+const RESET_TTL_MIN = 60;
 const REFRESH_TTL_MS = 30 * 24 * 3600 * 1000;
 
 export interface Tokens { accessToken: string; refreshToken: string; tenantId: string; role: Role }
@@ -30,7 +32,12 @@ export class AuthService {
     @Inject(KEY_SERVICE) private readonly keys: KeyService,
     @Inject(RATE_STORE) private readonly rates: RateStore,
     @Inject(RATE_CONFIG) private readonly cfg: RateConfig,
+    @Inject(MAILER) private readonly mailer: Mailer,
   ) {}
+
+  private appUrl() { return (process.env.PUBLIC_APP_URL ?? 'http://localhost:3400').replace(/\/$/, ''); }
+  /** Mail never blocks or breaks the operation that triggered it; a failure is logged by the sweep-less path as a quiet no-op. */
+  private mail(m: Parameters<Mailer['send']>[0]) { if (!this.mailer.enabled) return Promise.resolve(false); return this.mailer.send(m).then(() => true, () => false); }
 
   async signup(i: { email: string; password: string; name: string; tenantName: string; country?: string; industryPreset?: string }): Promise<Tokens> {
     const email = i.email.toLowerCase();
@@ -144,7 +151,42 @@ export class AuthService {
     await this.db.models.User.updateOne({ _id: userId }, { $set: { passwordHash: await argon2.hash(next, { type: argon2.argon2id }) } });
     await this.logoutAll(userId);
     await this.audit.record({ action: 'auth.password_changed', entity: 'user', entityId: userId });
+    void this.mail(emails.passwordChanged(user.email));
     return { ok: true };
+  }
+
+  // ---------- password reset (email link) ----------
+  /**
+   * Always answers the same way, whether or not the address is registered (no account enumeration). The mail is sent in the
+   * background so response time does not reveal it either. At most 3 links per user per hour.
+   */
+  async forgotPassword(emailRaw: string, ip = 'unknown') {
+    const email = emailRaw.toLowerCase(); const user: any = await this.sys.findUserByEmail(email);
+    if (user && user.status === 'active' && (await this.sys.recentPasswordResets(user._id, new Date(Date.now() - 3600_000))) < 3) {
+      const token = randomBytes(32).toString('base64url');
+      await this.sys.createPasswordReset({ userId: user._id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + RESET_TTL_MIN * 60_000), ip });
+      void this.mail(emails.passwordReset(email, `${this.appUrl()}/reset/${token}`, RESET_TTL_MIN));
+    }
+    return { ok: true, message: 'If that address has an account, a reset link is on its way.', emailEnabled: this.mailer.enabled };
+  }
+
+  async resetPassword(token: string, password: string) {
+    const r: any = await this.sys.consumePasswordReset(sha256(token), new Date());
+    if (!r) throw new BadRequestException('This reset link is invalid, expired or already used');
+    await this.sys.setUserPassword(r.userId, await argon2.hash(password, { type: argon2.argon2id }));
+    await this.sys.revokeAllSessions(r.userId); // every device is signed out
+    for (const m of (await this.sys.listMemberships(r.userId)) as any[]) await runWithTenant(String(m.tenantId), () => this.audit.record({ action: 'auth.password_reset', entity: 'user', entityId: String(r.userId) })).catch(() => undefined);
+    const u: any = await this.db.models.User.findById(r.userId, { email: 1 }).lean().exec();
+    if (u?.email) void this.mail(emails.passwordChanged(u.email));
+    return { ok: true };
+  }
+
+  // ---------- email notices (per member) ----------
+  async emailPrefs(userId: string) { const m: any = await this.db.repos.memberships.findOne({ userId }); return { ...prefsOf(m), emailEnabled: this.mailer.enabled }; }
+  async setEmailPrefs(userId: string, p: { alerts?: boolean; digest?: boolean }) {
+    const set: Record<string, boolean> = {}; if (p.alerts !== undefined) set['emailPrefs.alerts'] = p.alerts; if (p.digest !== undefined) set['emailPrefs.digest'] = p.digest;
+    if (Object.keys(set).length) await this.db.repos.memberships.updateOne({ userId }, { $set: set });
+    return this.emailPrefs(userId);
   }
 
   private async issue(userId: string, tenantId: string, role: Role, membershipId: string, family = randomBytes(8).toString('hex')): Promise<Tokens> {
@@ -196,7 +238,9 @@ export class AuthService {
       invitedBy: by.userId, expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
     });
     await this.audit.record({ action: 'user.invited', entity: 'invitation', meta: { email: i.email, role: i.role } });
-    return { inviteToken: token }; // delivered as a link by the email connector in a later phase
+    const [t, inviter]: any[] = await Promise.all([this.db.models.Tenant.findById(tenantId, { name: 1 }).lean().exec(), this.db.models.User.findById(by.userId, { name: 1 }).lean().exec()]);
+    const emailed = await this.mail(emails.invitation(i.email.toLowerCase(), { url: `${this.appUrl()}/invite/${token}`, workspace: t?.name ?? 'your workspace', inviter: inviter?.name, role: i.role, days: 7 }));
+    return { inviteToken: token, emailed }; // the link is returned too so an admin can share it by hand when email is not configured
   }
 
   async acceptInvitation(token: string, i: { name: string; password: string }): Promise<Tokens> {

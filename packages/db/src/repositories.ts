@@ -203,6 +203,14 @@ export function createSystemOps(m: Models) {
     findUserByEmail: (email: string) =>
       runAsSystem('auth.findUserByEmail', () => m.User.findOne({ email: email.toLowerCase() }).exec()),
 
+    /** Password reset (the user is signed out, so there is no tenant context). Only token hashes are stored. */
+    createPasswordReset: (r: { userId: any; tokenHash: string; expiresAt: Date; ip?: string }) => runAsSystem('auth.passwordReset', () => m.PasswordReset.create(r)),
+    recentPasswordResets: (userId: any, since: Date) => runAsSystem('auth.passwordReset', () => m.PasswordReset.countDocuments({ userId, createdAt: { $gte: since } }).exec()),
+    /** Atomically spends a link: valid only once and only before it expires. */
+    consumePasswordReset: (tokenHash: string, now: Date) => runAsSystem('auth.passwordReset', () => m.PasswordReset.findOneAndUpdate({ tokenHash, usedAt: null, expiresAt: { $gt: now } }, { $set: { usedAt: now } }).lean().exec()),
+    revokeAllSessions: (userId: any) => runAsSystem('auth.passwordReset', () => m.RefreshToken.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date() } }).exec()),
+    setUserPassword: (userId: any, passwordHash: string) => runAsSystem('auth.passwordReset', () => m.User.updateOne({ _id: userId, status: 'active' }, { $set: { passwordHash } }).exec()),
+
     /** Login: all memberships of a user across tenants. */
     listMemberships: (userId: Types.ObjectId | string) =>
       runAsSystem('auth.listMemberships', () => m.Membership.find({ userId, status: 'active' }).lean().exec()),

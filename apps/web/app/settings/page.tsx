@@ -18,7 +18,7 @@ export default function Settings() {
   const [manifests, setManifests] = useState<Manifest[]>([]); const [conns, setConns] = useState<Conn[]>([]); const [members, setMembers] = useState<Member[]>([]); const [ingress, setIngress] = useState<string | null>(null);
   const [pick, setPick] = useState(''); const [name, setName] = useState(''); const [vals, setVals] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<{ title: string; items: [string, string][] } | null>(null);
-  const [inv, setInv] = useState({ email: '', role: 'agent' }); const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [inv, setInv] = useState({ email: '', role: 'agent' }); const [inviteLink, setInviteLink] = useState<string | null>(null); const [emailed, setEmailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -94,12 +94,12 @@ export default function Settings() {
 
       {tab === 'team' && (<>
         <section className="card" aria-label="Invite"><h2>Invite a teammate</h2>
-          <form onSubmit={(e) => { e.preventDefault(); void act(async () => { const r = await api<{ inviteToken: string }>('/v1/invitations', { method: 'POST', body: inv }); setInviteLink(`${window.location.origin}/invite/${r.inviteToken}`); setInv({ ...inv, email: '' }); }); }}>
+          <form onSubmit={(e) => { e.preventDefault(); void act(async () => { const r = await api<{ inviteToken: string; emailed?: boolean }>('/v1/invitations', { method: 'POST', body: inv }); setEmailed(!!r.emailed); setInviteLink(`${window.location.origin}/invite/${r.inviteToken}`); setInv({ ...inv, email: '' }); }); }}>
             <label htmlFor="ie">Email</label><input id="ie" type="email" required value={inv.email} onChange={(e) => setInv({ ...inv, email: e.target.value })} />
             <label htmlFor="ir">Role</label><select id="ir" value={inv.role} onChange={(e) => setInv({ ...inv, role: e.target.value })}><option value="agent">Agent</option><option value="manager">Manager</option><option value="admin">Admin</option></select>
             <div className="row" style={{ marginTop: 12 }}><button className="primary">Create invite link</button></div>
           </form>
-          {inviteLink && <div data-testid="invite-link"><p className="reason">Send this link (valid 7 days, single use). Email delivery arrives with the email connector.</p><p><code style={{ wordBreak: 'break-all' }}>{inviteLink}</code></p></div>}
+          {inviteLink && <div data-testid="invite-link"><p className="reason">{emailed ? 'We emailed the invitation. You can also send this link yourself (valid 7 days, single use).' : 'Email is not set up here, so send this link yourself (valid 7 days, single use).'}</p><p><code style={{ wordBreak: 'break-all' }}>{inviteLink}</code></p></div>}
         </section>
         <section className="card" aria-label="Members"><h2>Members</h2>
           <ul className="list">{members.map((m) => <li key={m.userId}><span>{m.name} <span className="reason">{m.email}</span></span><span>{m.role}{m.status !== 'active' ? ' (inactive)' : ''}</span></li>)}</ul>

@@ -32,7 +32,7 @@ export default function Login() {
         {error && <p className="err" role="alert">{error}</p>}
         <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
       </form>
-      <p className="reason" style={{ textAlign: 'center' }}><a href="/signup">Create a workspace</a></p>
+      <p className="reason" style={{ textAlign: 'center' }}><a href="/forgot">Forgot your password?</a> · <a href="/signup">Create a workspace</a></p>
     </main>
   );
 }

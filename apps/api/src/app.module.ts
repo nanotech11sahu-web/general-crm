@@ -21,11 +21,12 @@ import { AiModule } from './ai/ai.module';
 import { OpsModule } from './ops/ops.module';
 import { PrivacyModule } from './privacy/privacy.module';
 import { BillingModule, SubscriptionGuard } from './billing/billing.module';
+import { MailModule } from './mail/mail.module';
 import { PlatformModule } from './platform/platform.module';
 import { HardeningModule, RateLimitGuard } from './hardening/hardening.module';
 
 @Module({
-  imports: [DbModule, HardeningModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule, AiModule, OpsModule, PrivacyModule, BillingModule, PlatformModule],
+  imports: [DbModule, HardeningModule, MailModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule, AiModule, OpsModule, PrivacyModule, BillingModule, PlatformModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RateLimitGuard },

@@ -11,7 +11,9 @@ import request from 'supertest';
 import nodeHttp from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrateUp } from '@leaddesk/db';
+import { MailSweeper, MemoryMailer } from '@leaddesk/domain';
 
+const memMailer = new MemoryMailer();
 let rs: MongoMemoryReplSet; let app: INestApplication; let http: any;
 /** Switchboard so individual tests can script provider (Meta/Google) responses. Documented shapes, not live traffic. */
 let providerFetch: (url: string, init?: any) => Promise<any> = async () => ({ ok: false, status: 404, text: async () => '{}' });
@@ -30,7 +32,8 @@ beforeAll(async () => {
   const { AppModule } = await import('../src/app.module');
   const { configureApp } = await import('../src/setup');
   const { HTTP_FETCH } = await import('../src/connections/connections.module');
-  const mod = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(HTTP_FETCH).useValue((u: string, i?: any) => providerFetch(u, i)).compile();
+  const { MAILER } = await import('../src/mail/mail.module');
+  const mod = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(MAILER).useValue(memMailer).overrideProvider(HTTP_FETCH).useValue((u: string, i?: any) => providerFetch(u, i)).compile();
   app = configureApp(mod.createNestApplication());
   await app.init();
   http = app.getHttpServer();
@@ -1541,5 +1544,72 @@ describe('admin configuration endpoints (phase 9)', () => {
     expect((await request(http).get('/v1/teams').set(auth(T)).expect(200)).body).toEqual([]);
     const other = await signup('cfg-other');
     await request(http).put(`/v1/statuses/${first._id}`).set(auth(other.token)).send({ name: 'Hijack' }).expect(404); // another workspace's status id is invisible
+  });
+});
+
+describe('email: password reset, invitations, notices (phase 9)', () => {
+  const linkOf = (m: { text: string }) => m.text.match(/https?:\/\/\S+/)![0];
+  it('password reset: same answer for unknown and known addresses, one-time link, signs every device out, throttled', async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'forgetful@x.io', password: 'correct-horse-9', name: 'Fay', tenantName: 'Reset Co' }).expect(201);
+    const cookie = o.headers['set-cookie'] as unknown as string[];
+    memMailer.sent.length = 0;
+    const unknown = await request(http).post('/v1/auth/forgot').send({ email: 'nobody-here@x.io' }).expect(200);
+    await new Promise((r) => setTimeout(r, 50)); expect(memMailer.sent).toHaveLength(0);
+    const known = await request(http).post('/v1/auth/forgot').send({ email: 'Forgetful@x.io' }).expect(200);
+    expect(known.body).toEqual(unknown.body); // nothing reveals whether the account exists
+    await new Promise((r) => setTimeout(r, 50));
+    expect(memMailer.sent).toHaveLength(1); expect(memMailer.last()).toMatchObject({ to: 'forgetful@x.io', subject: expect.stringContaining('Reset') });
+    const url = linkOf(memMailer.last()); const token = url.split('/reset/')[1]; expect(token.length).toBeGreaterThan(30);
+    await request(http).post('/v1/auth/reset').send({ token: 'x'.repeat(43), password: 'brand-new-pass-1' }).expect(400);
+    await request(http).post('/v1/auth/reset').send({ token, password: 'short' }).expect(400);
+    await request(http).post('/v1/auth/reset').send({ token, password: 'brand-new-pass-1' }).expect(200);
+    await request(http).post('/v1/auth/reset').send({ token, password: 'another-pass-123' }).expect(400); // single use
+    await request(http).post('/v1/auth/login').send({ email: 'forgetful@x.io', password: 'correct-horse-9' }).expect(401);
+    await request(http).post('/v1/auth/login').send({ email: 'forgetful@x.io', password: 'brand-new-pass-1' }).expect(200);
+    await request(http).post('/v1/auth/refresh').set('Cookie', cookie).expect(401); // the old session is gone
+    expect(memMailer.sent.some((m) => /password was changed/i.test(m.subject))).toBe(true);
+    for (let i = 0; i < 4; i++) await request(http).post('/v1/auth/forgot').send({ email: 'forgetful@x.io' }).expect(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(memMailer.sent.filter((m) => /Reset your/.test(m.subject))).toHaveLength(3); // 3 links per hour, no more
+  });
+
+  it('invitations are emailed with the link, and the link is still returned for hand-delivery', async () => {
+    const o = await signup('inv-mail-owner'); memMailer.sent.length = 0;
+    const r = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'Newbie@x.io', role: 'agent' }).expect(201);
+    expect(r.body).toMatchObject({ emailed: true, inviteToken: expect.any(String) });
+    expect(memMailer.last()).toMatchObject({ to: 'newbie@x.io' }); expect(linkOf(memMailer.last())).toContain(`/invite/${r.body.inviteToken}`);
+    expect(memMailer.last().subject).toContain('Co inv-mail-owner');
+    memMailer.failNext = 1;
+    const r2 = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'second@x.io', role: 'agent' }).expect(201);
+    expect(r2.body.emailed).toBe(false); expect(r2.body.inviteToken).toBeTruthy(); // a mail outage never blocks inviting
+  });
+
+  it('notices: billing mails cannot be switched off, alerts and digest can; each is sent once; a failed send is retried without duplicates', async () => {
+    const { TENANT_DB, SYSTEM_OPS } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const db: any = app.get(TENANT_DB, { strict: false }); const sys: any = app.get(SYSTEM_OPS, { strict: false });
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'notices@x.io', password: 'correct-horse-9', name: 'Nora', tenantName: 'Notice Co' }).expect(201);
+    const T = o.body.accessToken; const tid = o.body.tenantId;
+    const sweeper = new MailSweeper(db, sys, memMailer, 'https://app.example.test');
+    const add = (kind: string, payload: any, audience = 'admins') => runWithTenant(tid, () => db.repos.notifications.create({ kind, audience, payload, dedupeKey: `${kind}:${Math.random()}` }));
+    memMailer.sent.length = 0;
+    expect((await request(http).get('/v1/me/email-preferences').set(auth(T)).expect(200)).body).toMatchObject({ alerts: true, digest: true, emailEnabled: true });
+    await request(http).post('/v1/me/email-preferences').set(auth(T)).send({ alerts: false, digest: false }).expect(200);
+    await add('billing.expired', { text: 'Your workspace is read-only until a plan is active.' });
+    await add('connection.failing', { name: 'Meta Ads', provider: 'meta-leadads', reasons: ['token expired'] });
+    await add('pulse.digest', { day: '2026-10-05', text: 'Pulse digest for 2026-10-05\nNew leads 4' }, 'managers');
+    const a = await runWithTenant(tid, () => sweeper.runTenant('Notice Co'));
+    expect(a.sent).toBe(1); expect(memMailer.last().subject).toContain('read-only'); // only the essential billing notice
+    expect((await runWithTenant(tid, () => sweeper.runTenant('Notice Co'))).sent).toBe(0); // opted-out notices are marked handled, nothing repeats
+    await request(http).post('/v1/me/email-preferences').set(auth(T)).send({ alerts: true, digest: true }).expect(200);
+    await add('connection.failing', { name: 'Meta Ads', provider: 'meta-leadads', reasons: ['token expired'] });
+    await add('pulse.digest', { day: '2026-10-06', text: 'Pulse digest for 2026-10-06\nNew leads 9' }, 'managers');
+    memMailer.failNext = 1;
+    const b = await runWithTenant(tid, () => sweeper.runTenant('Notice Co'));
+    expect(b.failed).toBe(1); expect(b.sent).toBe(1);
+    const c = await runWithTenant(tid, () => sweeper.runTenant('Notice Co'));
+    expect(c.sent).toBe(1); // the failed one is retried, the delivered one is not repeated
+    expect(memMailer.sent.map((m) => m.subject).filter((s) => /stopped working|digest/.test(s))).toHaveLength(2);
+    expect(memMailer.sent.every((m) => m.to === 'notices@x.io' && /\[Notice Co\]/.test(m.subject))).toBe(true);
+    expect(memMailer.last().text).toContain('https://app.example.test/');
   });
 });

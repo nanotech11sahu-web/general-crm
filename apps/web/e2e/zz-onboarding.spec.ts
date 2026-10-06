@@ -75,3 +75,20 @@ test('two-factor from the UI: enrol, get recovery codes once, then sign-in asks 
   await page.getByLabel(/Authenticator code/).fill(totp(totpSecret, 1)); await page.getByRole('button', { name: 'Sign in' }).click(); // next time step: the enrolment code cannot be replayed
   await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
 });
+
+test('forgot password: the same answer for anyone, the emailed link sets a new password, the old one stops working', async ({ browser }) => {
+  const ctx = await browser.newContext({ baseURL: 'http://127.0.0.1:3400' }); const page = await ctx.newPage();
+  const stamp = Date.now(); const email = `forgot-${stamp}@e2e.test`;
+  await page.goto('/signup'); await page.getByLabel('Business name').fill(`Forgot Co ${stamp}`); await page.getByLabel('Your name').fill('Fo Rgot'); await page.getByLabel('Work email').fill(email); await page.getByLabel(/Password/).fill('first-password-1'); await page.getByRole('button', { name: 'Create workspace' }).click();
+  await expect(page.getByTestId('onboarding')).toBeVisible();
+  await ctx.clearCookies(); await page.goto('/login'); await page.getByRole('link', { name: 'Forgot your password?' }).click();
+  await page.getByLabel('Your email').fill(email); await page.getByRole('button', { name: 'Email me a link' }).click();
+  await expect(page.getByTestId('forgot-done')).toContainText('If that address has an account');
+  let link = ''; await expect.poll(async () => { const rows: any[] = await (await fetch('http://127.0.0.1:3301/mail')).json(); const m = rows.filter((r) => r.to === email).pop(); link = m?.text.match(/https?:\/\/\S+/)?.[0] ?? ''; return link; }, { timeout: 10_000 }).toContain('/reset/');
+  await page.goto(link.replace('http://127.0.0.1:3400', ''));
+  await page.getByLabel('New password (10+ characters)').fill('second-password-2'); await page.getByLabel('Repeat it').fill('second-password-2'); await page.getByRole('button', { name: 'Change password' }).click();
+  await expect(page.getByTestId('reset-done')).toBeVisible();
+  await page.getByRole('link', { name: 'Sign in' }).click();
+  await page.getByLabel('Email').fill(email); await page.getByLabel('Password').fill('first-password-1'); await page.getByRole('button', { name: 'Sign in' }).click(); await expect(page.getByText('Wrong email or password')).toBeVisible();
+  await page.getByLabel('Password').fill('second-password-2'); await page.getByRole('button', { name: 'Sign in' }).click(); await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible();
+});

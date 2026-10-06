@@ -8,14 +8,19 @@ export default function Security() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [msg, setMsg] = useState<string | null>(null);
   const [setup, setSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null); const [code, setCode] = useState(''); const [recovery, setRecovery] = useState<string[] | null>(null);
+  const [prefs, setPrefs] = useState<{ alerts: boolean; digest: boolean; emailEnabled: boolean } | null>(null);
   const [cur, setCur] = useState(''); const [next, setNext] = useState(''); const [pw2, setPw2] = useState(''); const [dis, setDis] = useState('');
-  useEffect(() => { (async () => { if (!(await refresh())) router.replace('/login'); else setReady(true); })(); }, [router]);
+  useEffect(() => { (async () => { if (!(await refresh())) router.replace('/login'); else { setReady(true); api<{ alerts: boolean; digest: boolean; emailEnabled: boolean }>('/v1/me/email-preferences').then(setPrefs).catch(() => undefined); } })(); }, [router]);
   const run = async (fn: () => Promise<void>, ok: string) => { setMsg(null); try { await fn(); setMsg(ok); } catch (e) { setMsg(e instanceof ApiError ? e.message : 'Something went wrong'); } };
   if (!ready) return <main><p className="reason">Loading…</p></main>;
   return (
     <main>
       <div className="bar"><h1>Security</h1><button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Today</button></div>
       {msg && <p className="reason" role="status">{msg}</p>}
+      {prefs && (<section className="card" data-testid="email-notices"><h2>Email notices</h2>
+        {!prefs.emailEnabled && <p className="reason">Email is not set up on this deployment, so nothing is sent yet.</p>}
+        {(['alerts', 'digest'] as const).map((k) => (<label key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 16, color: 'inherit' }}><input type="checkbox" style={{ width: 20, minHeight: 20 }} checked={prefs[k]} onChange={(e) => run(async () => setPrefs(await api('/v1/me/email-preferences', { method: 'POST', body: { [k]: e.target.checked } })), 'Saved')} />{k === 'alerts' ? 'Connection problems (billing notices are always sent to owners and admins)' : 'Daily lead digest (managers and admins)'}</label>))}
+      </section>)}
       <section className="card"><h2>Two-factor authentication</h2>
         {!setup && !recovery && <><p className="reason">Add a second step to sign-in with an authenticator app (Google Authenticator, Authy, 1Password…).</p><div className="row"><button className="primary" onClick={() => run(async () => setSetup(await api('/v1/auth/2fa/setup', { method: 'POST' })), 'Scan or enter the key, then type the 6-digit code.')}>Set up</button></div></>}
         {setup && (<>

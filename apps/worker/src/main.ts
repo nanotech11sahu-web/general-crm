@@ -15,9 +15,9 @@ import { CadenceSweeper } from './cadence-sweeper';
 import { PulseSweeper } from './pulse-sweeper';
 import { AiSweeper } from './ai-sweeper';
 import { OpsSweeper } from './ops-sweeper';
-import { BillingService, RetentionService, objectStoreFromEnv, paymentProviderFromEnv } from '@leaddesk/domain';
+import { BillingService, MailSweeper, NullMailer, RetentionService, objectStoreFromEnv, paymentProviderFromEnv } from '@leaddesk/domain';
 import { instrument, startMetricsServer, workerLogger } from './observability';
-import { Metrics, validateEnv } from '@leaddesk/platform';
+import { Metrics, createSmtpMailer, validateEnv } from '@leaddesk/platform';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
@@ -74,6 +74,8 @@ async function bootstrap() {
   await periodic('ai', { every: 60_000 }, () => new AiSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
   await periodic('ops', { every: 300_000 }, () => new OpsSweeper(db, sys).run());
   const payments = paymentProviderFromEnv(process.env);
+  const mailer = createSmtpMailer() ?? new NullMailer();
+  await periodic('mail', { every: 60_000 }, () => new MailSweeper(db, sys, mailer, process.env.PUBLIC_APP_URL ?? 'http://localhost:3400').runAll()); // billing/connection alerts and the daily digest, by email
   await periodic('billing', { every: 60_000 }, () => BillingService.sweepAll(db, sys, payments)); // retry provider events whose first processing failed
   await periodic('billing-reminders', { pattern: '15 * * * *' }, () => BillingService.sweepAll(db, sys, payments, { reminders: true })); // trial ending / ended / payment failing, once each
   const store = objectStoreFromEnv();

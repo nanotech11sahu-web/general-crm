@@ -5,13 +5,16 @@
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
 import { createServer } from 'node:http';
 import { migrateUp, runWithTenant, TenantDbRouter } from '@leaddesk/db';
 
 const PORT = Number(process.env.E2E_API_PORT ?? 3300);
+const MAIL_FILE = join(tmpdir(), `leaddesk-e2e-mail-${process.pid}.jsonl`);
 const base = `http://127.0.0.1:${PORT}`;
 
 async function j(path: string, init: { method?: string; token?: string; body?: unknown } = {}) {
@@ -27,7 +30,7 @@ async function main() {
   const c = await MongoClient.connect(url); await migrateUp(c.db()); await c.close();
   const api = spawn('node', ['-r', '@swc-node/register', 'src/main.ts'], {
     cwd: resolve(__dirname, '..'),
-    env: { ...process.env, MONGO_URL: url, PORT: String(PORT), JWT_ACCESS_SECRET: 'e2e-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), REALTIME_POLL_MS: '200', RATE_LIMIT_SCALE: '50', NODE_ENV: 'test' },
+    env: { ...process.env, MONGO_URL: url, PORT: String(PORT), JWT_ACCESS_SECRET: 'e2e-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), REALTIME_POLL_MS: '200', RATE_LIMIT_SCALE: '50', NODE_ENV: 'test', MAIL_CAPTURE_FILE: MAIL_FILE, PUBLIC_APP_URL: 'http://127.0.0.1:3400' },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   const shutdown = async () => { api.kill('SIGTERM'); await rs.stop().catch(() => undefined); process.exit(0); };
@@ -48,6 +51,10 @@ async function main() {
   // Test-only seeding endpoint (browser tests cannot reach the real SMS/WhatsApp providers, so an inbound reply is planted directly).
   const router = new TenantDbRouter(url); const db = await router.connect();
   createServer((req, res) => {
+    if (req.method === 'GET' && req.url?.startsWith('/mail')) { // the emails the API "sent" (newest last), for the reset-link browser test
+      const rows = existsSync(MAIL_FILE) ? readFileSync(MAIL_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+      res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(rows)); return;
+    }
     if (req.method === 'POST' && req.url === '/expire-trial') { // lets the billing browser test end the e2e workspace's trial
       runWithTenant(owner.tenantId, () => db.repos.subscriptions.updateOne({}, { $set: { trialEndsAt: new Date(Date.now() - 1000) } })).then(() => res.end('{"ok":true}')).catch((e: unknown) => { res.statusCode = 500; res.end(String(e)); });
       return;

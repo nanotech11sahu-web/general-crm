@@ -57,7 +57,7 @@ export function rateStoreFromEnv(env: NodeJS.ProcessEnv = process.env, onError?:
 
 export interface Bucket { limit: number; windowS: number }
 export const DEFAULT_BUCKETS = {
-  login: { limit: 10, windowS: 60 }, signup: { limit: 5, windowS: 3600 }, accept: { limit: 10, windowS: 60 }, refresh: { limit: 60, windowS: 60 },
+  login: { limit: 10, windowS: 60 }, signup: { limit: 5, windowS: 3600 }, accept: { limit: 10, windowS: 60 }, refresh: { limit: 60, windowS: 60 }, forgot: { limit: 5, windowS: 3600 }, reset: { limit: 10, windowS: 60 },
   user: { limit: 600, windowS: 60 }, tenant: { limit: 3000, windowS: 60 }, ip: { limit: 600, windowS: 60 }, webhook: { limit: 6000, windowS: 60 },
 } satisfies Record<string, Bucket>;
 export type BucketName = keyof typeof DEFAULT_BUCKETS;

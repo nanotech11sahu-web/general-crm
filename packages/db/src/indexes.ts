@@ -120,6 +120,13 @@ export const INDEXES_V3: Idx[] = [
   { collection: 'platformaudits', keys: { tenantId: 1, at: -1 }, options: { name: 'v3_platform_audit' } },
 ];
 
+export const INDEXES_V4: Idx[] = [
+  { collection: 'passwordresets', keys: { tokenHash: 1 }, options: { name: 'v4_reset_token', unique: true } },
+  { collection: 'passwordresets', keys: { userId: 1, usedAt: 1 }, options: { name: 'v4_reset_user' } },
+  { collection: 'passwordresets', keys: { expiresAt: 1 }, options: { name: 'v4_reset_ttl', expireAfterSeconds: 86400 } }, // spent or expired links disappear a day after expiry
+  { collection: 'notifications', keys: { tenantId: 1, createdAt: 1 }, options: { name: 'v4_notifications_recent' } },
+];
+
 export const COLLECTIONS = [...new Set(INDEXES.map((i) => i.collection))];
 
 export async function ensureCollections(db: Db) {

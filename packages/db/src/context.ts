@@ -41,6 +41,8 @@ export const SYSTEM_OPERATIONS = [
   'auth.listMemberships',
   'auth.refreshToken',
   'auth.acceptInvitation',
+  'auth.passwordReset',
+  'mail.sweep',
   'migration',
   'test',
 ] as const;

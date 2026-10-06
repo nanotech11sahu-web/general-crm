@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
-import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import type { Request, Response } from 'express';
 import { AuthService, Tokens } from './auth.service';
 import { CurrentUser, Public, RequirePermission } from '../common/guards';
@@ -30,6 +30,9 @@ class InviteDto {
   @IsIn(['admin', 'manager', 'agent']) role!: 'admin' | 'manager' | 'agent';
   @IsOptional() @IsString() teamId?: string;
 }
+class ForgotDto { @IsEmail() @MaxLength(254) email!: string }
+class ResetDto { @IsString() @MinLength(20) @MaxLength(200) token!: string; @IsString() @MinLength(10) @MaxLength(128) password!: string }
+class EmailPrefsDto { @IsOptional() @IsBoolean() alerts?: boolean; @IsOptional() @IsBoolean() digest?: boolean }
 class AcceptDto {
   @IsString() @MinLength(1) @MaxLength(120) name!: string;
   @IsString() @MinLength(10) @MaxLength(128) password!: string;
@@ -50,6 +53,15 @@ export class AuthController {
 
   @Public() @RateLimit('login') @Post('auth/login') @HttpCode(200)
   async login(@Body() b: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) { return setRefresh(res, await this.auth.login(b, req.ip)); }
+
+  @Public() @RateLimit('forgot') @Post('auth/forgot') @HttpCode(200)
+  forgot(@Body() b: ForgotDto, @Req() req: Request) { return this.auth.forgotPassword(b.email, req.ip); }
+
+  @Public() @RateLimit('reset') @Post('auth/reset') @HttpCode(200)
+  reset(@Body() b: ResetDto) { return this.auth.resetPassword(b.token, b.password); }
+
+  @AllowRestricted() @Get('me/email-preferences') emailPrefs(@CurrentUser() u: AuthUser) { return this.auth.emailPrefs(u.userId); }
+  @AllowRestricted() @Post('me/email-preferences') @HttpCode(200) setEmailPrefs(@CurrentUser() u: AuthUser, @Body() b: EmailPrefsDto) { return this.auth.setEmailPrefs(u.userId, b); }
 
   @Public() @RateLimit('refresh') @Post('auth/refresh') @HttpCode(200)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {

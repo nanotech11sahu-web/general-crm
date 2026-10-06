@@ -11,7 +11,7 @@ function make(conn: Connection, name: string, def: Record<string, any>, o: { glo
 }
 
 /** Collections that are not tenant-owned. */
-export const GLOBAL_COLLECTIONS = ['tenants', 'users', 'billingevents', 'platformaudits'] as const;
+export const GLOBAL_COLLECTIONS = ['tenants', 'users', 'billingevents', 'platformaudits', 'passwordresets'] as const;
 
 export function buildModels(conn: Connection) {
   const Tenant = make(conn, 'Tenant', {
@@ -47,6 +47,7 @@ export function buildModels(conn: Connection) {
     skills: [String],
     maxOpenLeads: Number,
     onLeaveUntil: Date,
+    emailPrefs: Schema.Types.Mixed, // { alerts?: boolean, digest?: boolean }; both default to on
   });
 
   const Team = make(conn, 'Team', {
@@ -271,6 +272,8 @@ export function buildModels(conn: Connection) {
     payload: Schema.Types.Mixed,
     dedupeKey: String,
     readAt: Date,
+    emailedTo: [String], // recipients already mailed (a retry after a partial failure skips them)
+    emailedAt: Date, // set by the mail sweep once the notice went out by email (or was deliberately skipped)
   });
 
   const Conversation = make(conn, 'Conversation', {
@@ -375,6 +378,14 @@ export function buildModels(conn: Connection) {
     attempts: { type: Number, default: 0 },
     error: String,
     processedAt: Date,
+  }, { global: true });
+  /** Single-use password reset links. Global (the user is not signed in, so there is no tenant); only the hash of the token is stored. */
+  const PasswordReset = make(conn, 'PasswordReset', {
+    userId: { type: Schema.Types.ObjectId, required: true },
+    tokenHash: { type: String, required: true },
+    expiresAt: { type: Date, required: true },
+    usedAt: Date,
+    ip: String,
   }, { global: true });
   /** Operator (support) actions on workspaces. Global and append-only by convention. */
   const PlatformAudit = make(conn, 'PlatformAudit', {
@@ -496,7 +507,7 @@ export function buildModels(conn: Connection) {
   });
 
   return {
-    Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
+    Tenant, User, PasswordReset, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
     IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, PlatformAudit, Suppression, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };

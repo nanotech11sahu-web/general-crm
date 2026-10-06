@@ -11,12 +11,14 @@
     "@leaddesk/crypto": "workspace:*",
     "@leaddesk/db": "workspace:*",
     "@nestjs/common": "^11.0.0",
-    "reflect-metadata": "^0.2.2",
-    "ioredis": "^5.4.0"
+    "ioredis": "^5.4.0",
+    "nodemailer": "^7.0.13",
+    "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
     "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.2",
     "vitest": "^2.1.0"
   }
 }
