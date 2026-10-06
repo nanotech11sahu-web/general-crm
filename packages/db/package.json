@@ -1,0 +1,22 @@
+{
+  "name": "@leaddesk/db",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run",
+    "migrate": "tsx src/migrate-cli.ts up",
+    "migrate:down": "tsx src/migrate-cli.ts down"
+  },
+  "dependencies": {
+    "@leaddesk/shared": "workspace:*",
+    "migrate-mongo": "^11.0.0",
+    "mongodb": "^6.12.0",
+    "mongoose": "^8.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "mongodb-memory-server": "^10.1.0"
+  }
+}

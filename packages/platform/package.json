@@ -1,0 +1,14 @@
+{
+  "name": "@leaddesk/platform",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": { "typecheck": "tsc -p . --noEmit" },
+  "dependencies": {
+    "@leaddesk/crypto": "workspace:*",
+    "@leaddesk/db": "workspace:*",
+    "@nestjs/common": "^11.0.0",
+    "reflect-metadata": "^0.2.2"
+  },
+  "devDependencies": { "@types/node": "^22.10.0" }
+}

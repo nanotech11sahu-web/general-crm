@@ -1,0 +1,28 @@
+{
+  "name": "@leaddesk/webhook-ingress",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": { "dev": "tsx watch src/main.ts", "start": "tsx src/main.ts", "typecheck": "tsc -p . --noEmit", "test": "vitest run" },
+  "dependencies": {
+    "@leaddesk/connectors-core": "workspace:*",
+    "@leaddesk/crypto": "workspace:*",
+    "@leaddesk/db": "workspace:*",
+    "@leaddesk/platform": "workspace:*",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "bullmq": "^5.34.0",
+    "ioredis": "^5.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.0.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/supertest": "^6.0.2",
+    "mongodb": "^6.12.0",
+    "mongodb-memory-server": "^10.1.0",
+    "supertest": "^7.0.0"
+  }
+}
