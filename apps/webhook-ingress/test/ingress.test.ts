@@ -134,3 +134,62 @@ describe('meta app-level webhook', () => {
     } finally { await app2.close(); }
   });
 });
+
+describe('whatsapp app-level + sms token webhooks', () => {
+  const APP_SECRET = 'wa-app-secret';
+  const wsign = (b: string) => 'sha256=' + createHmac('sha256', APP_SECRET).update(b).digest('hex');
+  let waTenant: string; let smsConnPublic: string; let smsTenant: string; let kekB: Buffer;
+  const body = (...msgs: any[]) => JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA1', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: 'PN1' }, contacts: [{ wa_id: '919800000001', profile: { name: 'Anita' } }], messages: msgs.filter((m) => m.text), statuses: msgs.filter((m) => m.status) } }, { field: 'message_template_status_update', value: { event: 'APPROVED', message_template_id: 'tp1', message_template_name: 'welcome', message_template_language: 'en' } }] }] });
+
+  beforeAll(async () => {
+    process.env.META_APP_SECRET = APP_SECRET; process.env.META_WEBHOOK_VERIFY_TOKEN = 'wvt';
+    const mkT = async (slug: string) => String(((await runAsSystem('test', () => db.models.Tenant.create({ name: slug, slug }))) as any)._id);
+    waTenant = await mkT('wa-t'); smsTenant = await mkT('sms-t');
+    await runWithTenant(waTenant, () => db.repos.connections.create({ provider: 'whatsapp-cloud', category: 'whatsapp', name: 'WA', publicId: 'wa-pub', status: 'verified', config: { wabaId: 'WABA1', phoneNumberId: 'PN1' } }));
+    kekB = randomBytes(32); // the suite's key service uses the env KEK; seal with it
+    const id = String(newObjectId()); smsConnPublic = 'sms-pub-' + randomBytes(4).toString('hex');
+    const sealed = await sealSecret(new LocalKeyService(Buffer.from(process.env.LOCAL_KEK_BASE64!, 'base64')), { tenantId: smsTenant, connectionId: id }, JSON.stringify({ authKey: 'k'.repeat(20), webhookToken: 'sms-hook-token' }));
+    await runWithTenant(smsTenant, () => db.repos.connections.create({ _id: id, provider: 'sms-msg91', category: 'sms', name: 'SMS', publicId: smsConnPublic, status: 'verified', secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef }));
+    void kekB;
+  });
+
+  it('routes WhatsApp messages/statuses by phone number and template updates by WABA; idempotent; signed; handshake', async () => {
+    const { createRegistry } = await import('@leaddesk/connectors');
+    const { REGISTRY } = await import('../src/hooks.controller');
+    const m2 = await Test.createTestingModule({ imports: [(await import('../src/ingress.module')).IngressModule] })
+      .overrideProvider((await import('../src/inbox-queue')).INBOX_QUEUE).useValue({ enqueue: async (j: any) => { jobs.push(j); } })
+      .overrideProvider(REGISTRY).useValue(createRegistry({ META_APP_ID: 'APP1', META_APP_SECRET: APP_SECRET, META_WEBHOOK_VERIFY_TOKEN: 'wvt' } as any)).compile();
+    const app2 = m2.createNestApplication({ rawBody: true }); await app2.init(); const h2 = app2.getHttpServer();
+    const post = (b: string, headers: Record<string, string> = {}) => request(h2).post('/hooks/whatsapp-cloud').set('Content-Type', 'application/json').set(headers).send(b);
+    try {
+      await request(h2).get('/hooks/whatsapp-cloud').query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'wvt', 'hub.challenge': '42' }).expect(200).expect('42');
+      await request(h2).get('/hooks/whatsapp-cloud').query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'bad', 'hub.challenge': '42' }).expect(403);
+      const b = body({ from: '919800000001', id: 'wamid.A', timestamp: '1773120000', type: 'text', text: { body: 'hello' } }, { id: 'wamid.OUT', status: 'delivered' });
+      await post(b).expect(401);
+      await post(b, { 'x-hub-signature-256': wsign('tampered') }).expect(401);
+      expect((await post(b, { 'x-hub-signature-256': wsign(b) }).expect(200)).body.accepted).toBe(3); // message + status + template update
+      for (let i = 0; i < 3; i++) await post(b, { 'x-hub-signature-256': wsign(b) }).expect(200);   // Meta retries
+      const rows = (await runWithTenant(waTenant, () => db.repos.inbox.find({ provider: 'whatsapp-cloud' }))) as any[];
+      expect(rows.map((r) => r.externalEventId).sort()).toEqual(['status:wamid.OUT:delivered', 'tpl:tp1:APPROVED', 'wamid.A']);
+      expect(rows.find((r) => r.externalEventId === 'wamid.A').rawPayload).toMatchObject({ kind: 'message', profileName: 'Anita', from: '919800000001' });
+      // numbers nobody connected are acknowledged but stored nowhere
+      const unk = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WX', changes: [{ field: 'messages', value: { metadata: { phone_number_id: 'NOPE' }, messages: [{ from: '1', id: 'z', timestamp: '1', type: 'text', text: { body: 'x' } }] } }] }] });
+      expect((await post(unk, { 'x-hub-signature-256': wsign(unk) }).expect(200)).body.accepted).toBe(0);
+      expect(await runWithTenant(smsTenant, () => db.repos.inbox.count())).toBe(0);
+      await request(h2).post('/hooks/whatsapp-cloud/wa-pub').set('Content-Type', 'application/json').send('{}').expect(404);
+    } finally { await app2.close(); }
+  });
+
+  it('SMS delivery reports need the shared token (query or header) and are stored once', async () => {
+    const path = `/hooks/sms-msg91/${smsConnPublic}`;
+    const payload = JSON.stringify([{ request_id: 'req-9', status: '1' }]);
+    const send = (q: string, headers: Record<string, string> = {}) => request(http).post(path + q).set('Content-Type', 'application/json').set(headers).send(payload);
+    await send('').expect(401);
+    await send('?token=wrong').expect(401);
+    await send('', { 'x-webhook-token': 'nope' }).expect(401);
+    expect(await runWithTenant(smsTenant, () => db.repos.inbox.count())).toBe(0);
+    await send('?token=sms-hook-token').expect(200);
+    await send('', { 'x-webhook-token': 'sms-hook-token' }).expect(200);
+    expect(await runWithTenant(smsTenant, () => db.repos.inbox.count({ externalEventId: 'req-9:1' }))).toBe(1);
+  });
+});

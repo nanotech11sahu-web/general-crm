@@ -1,9 +1,13 @@
 import { ConnectorRegistry, websiteWebhook, type FetchLike } from '@leaddesk/connectors-core';
 import { createMetaLeadAds } from '@leaddesk/connector-meta-leadads';
 import { createGoogleSheets } from '@leaddesk/connector-google-sheets';
+import { createWhatsAppCloud } from '@leaddesk/connector-whatsapp-cloud';
+import { createMsg91Sms } from '@leaddesk/connector-sms-msg91';
+import { createExotel } from '@leaddesk/connector-telephony-exotel';
 
 export { metaChallenge, leadgenChanges } from '@leaddesk/connector-meta-leadads';
 export { googleAuthUrl, SHEETS_SCOPE } from '@leaddesk/connector-google-sheets';
+export { splitWhatsAppWebhook, whatsappChallenge, exchangeEmbeddedSignupCode } from '@leaddesk/connector-whatsapp-cloud';
 
 /**
  * Providers are enabled by platform-level app credentials in env (spec rule 2: client
@@ -13,6 +17,9 @@ export { googleAuthUrl, SHEETS_SCOPE } from '@leaddesk/connector-google-sheets';
 export function createRegistry(env: NodeJS.ProcessEnv = process.env, fetch?: FetchLike): ConnectorRegistry {
   const r = new ConnectorRegistry().register(websiteWebhook);
   if (env.META_APP_ID && env.META_APP_SECRET) r.register(createMetaLeadAds({ appId: env.META_APP_ID, appSecret: env.META_APP_SECRET, verifyToken: env.META_WEBHOOK_VERIFY_TOKEN ?? '', graphVersion: env.META_GRAPH_VERSION, fetch }));
+  if (env.META_APP_ID && env.META_APP_SECRET) r.register(createWhatsAppCloud({ appId: env.META_APP_ID, appSecret: env.META_APP_SECRET, verifyToken: env.META_WEBHOOK_VERIFY_TOKEN ?? '', graphVersion: env.META_GRAPH_VERSION, fetch }));
+  r.register(createMsg91Sms({ fetch }));
+  r.register(createExotel({ fetch }));
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) r.register(createGoogleSheets({ clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, fetch }));
   return r;
 }

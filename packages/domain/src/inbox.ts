@@ -5,6 +5,9 @@ import { DomainError, notFound } from './errors';
 import { leadFromFields } from './field-map';
 import { ConnectionService } from './connections';
 import { LeadService } from './lead-service';
+import { MessagingService } from './messaging';
+import { TelephonyService } from './telephony';
+import type { ObjectStore } from './storage';
 
 export type InboxOutcome = { status: 'done' | 'failed' | 'dead'; leads: { outcome: string; leadId?: string }[]; error?: string };
 
@@ -16,10 +19,12 @@ export type InboxOutcome = { status: 'done' | 'failed' | 'dead'; leads: { outcom
 export class InboxService {
   private readonly leads: LeadService;
   private readonly conns?: ConnectionService;
+  private readonly messaging?: MessagingService;
+  private telephony?: TelephonyService;
   /** `keys` lets providers that only send an id (Meta) fetch the full record with decrypted credentials. */
-  constructor(private readonly db: TenantDb, private readonly registry: ConnectorRegistry, private readonly maxAttempts = 8, keys?: KeyService) {
+  constructor(private readonly db: TenantDb, private readonly registry: ConnectorRegistry, private readonly maxAttempts = 8, keys?: KeyService, private readonly hooks: { onInbound?: (leadId: string, reason: 'reply' | 'stop') => Promise<void>; store?: ObjectStore } = {}) {
     this.leads = new LeadService(db);
-    if (keys) this.conns = new ConnectionService(db, keys, registry);
+    if (keys) { this.conns = new ConnectionService(db, keys, registry); this.messaging = new MessagingService(db, keys, registry); if (hooks.store) this.telephony = new TelephonyService(db, keys, registry, hooks.store); }
   }
   private get r() { return this.db.repos; }
 
@@ -39,7 +44,17 @@ export class InboxService {
       const mapping = parseMapping(conn.config?.fieldMapping);
       const results: InboxOutcome['leads'] = [];
       for (const e of events) {
-        if (e.kind !== 'LeadReceived') continue; // calls/messages are handled by their own pipelines in later phases
+        if (e.kind === 'InboundMessage' || e.kind === 'MessageStatus' || e.kind === 'TemplateStatus') {
+          if (!this.messaging) throw new DomainError('rejected', 'Messaging is not available in this context');
+          await this.messaging.handleEvent(conn, e, { onInbound: this.hooks.onInbound });
+          continue;
+        }
+        if (e.kind === 'CallEvent') {
+          if (!this.telephony) throw new DomainError('rejected', 'Telephony is not available in this context');
+          await this.telephony.handleEvent(conn, e);
+          continue;
+        }
+        if (e.kind !== 'LeadReceived') continue;
         const input = leadFromFields(e.fields, defs, mapping);
         input.source = { kind: row.provider, name: conn.name };
         if (e.externalRef) input.externalRef = e.externalRef;

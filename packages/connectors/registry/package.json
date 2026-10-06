@@ -10,7 +10,10 @@
   "dependencies": {
     "@leaddesk/connectors-core": "workspace:*",
     "@leaddesk/connector-meta-leadads": "workspace:*",
-    "@leaddesk/connector-google-sheets": "workspace:*"
+    "@leaddesk/connector-google-sheets": "workspace:*",
+    "@leaddesk/connector-whatsapp-cloud": "workspace:*",
+    "@leaddesk/connector-sms-msg91": "workspace:*",
+    "@leaddesk/connector-telephony-exotel": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0"

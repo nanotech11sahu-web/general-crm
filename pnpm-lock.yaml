@@ -287,6 +287,45 @@ importers:
       '@leaddesk/connector-meta-leadads':
         specifier: workspace:*
         version: link:../meta-leadads
+      '@leaddesk/connector-sms-msg91':
+        specifier: workspace:*
+        version: link:../sms-msg91
+      '@leaddesk/connector-telephony-exotel':
+        specifier: workspace:*
+        version: link:../telephony-exotel
+      '@leaddesk/connector-whatsapp-cloud':
+        specifier: workspace:*
+        version: link:../whatsapp-cloud
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/sms-msg91:
+    dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/telephony-exotel:
+    dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/whatsapp-cloud:
+    dependencies:
       '@leaddesk/connectors-core':
         specifier: workspace:*
         version: link:../core

@@ -2,7 +2,7 @@ import { All, Controller, ForbiddenException, Get, Headers, HttpCode, Inject, Lo
 import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { ConnectorRegistry } from '@leaddesk/connectors-core';
-import { leadgenChanges, metaChallenge } from '@leaddesk/connectors';
+import { leadgenChanges, metaChallenge, splitWhatsAppWebhook, whatsappChallenge } from '@leaddesk/connectors';
 import { openSecret, type KeyService } from '@leaddesk/crypto';
 import { runWithTenant, type SystemOps, type TenantDb } from '@leaddesk/db';
 import { KEY_SERVICE, SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
@@ -66,6 +66,42 @@ export class MetaHooksController {
     }
     if (unmatched) this.log.warn(`${unmatched} leadgen change(s) for pages with no connection`);
     return { ok: true, accepted }; // always 200 for a valid signature so Meta never disables the subscription
+  }
+}
+
+/** App-level WhatsApp Cloud webhook: messages/statuses route by phone_number_id, template updates by WABA id. */
+@Controller('hooks/whatsapp-cloud')
+export class WhatsAppHooksController {
+  private readonly log = new Logger('IngressWhatsApp');
+  constructor(
+    @Inject(SYSTEM_OPS) private readonly sys: SystemOps,
+    @Inject(TENANT_DB) private readonly db: TenantDb,
+    @Inject(REGISTRY) private readonly registry: ConnectorRegistry,
+    @Inject(INBOX_QUEUE) private readonly queue: InboxQueue,
+  ) {}
+
+  @Get()
+  challenge(@Query() q: Record<string, string>, @Res() res: Response) {
+    const token = process.env.META_WEBHOOK_VERIFY_TOKEN ?? '';
+    const c = token ? whatsappChallenge(q, token) : null;
+    if (c === null) throw new ForbiddenException();
+    res.status(200).type('text/plain').send(c);
+  }
+
+  @Post() @HttpCode(200)
+  async events(@Req() req: Request & { rawBody?: Buffer }, @Headers() headers: Record<string, string | string[] | undefined>) {
+    const connector = this.registry.get('whatsapp-cloud');
+    if (!connector?.manifest.webhook) throw new NotFoundException();
+    const rawBody = req.rawBody ?? Buffer.alloc(0);
+    if (!connector.manifest.webhook.verify({ headers, rawBody }, process.env.META_APP_SECRET ?? '')) { this.log.warn('invalid WhatsApp signature'); throw new UnauthorizedException(); }
+    let accepted = 0, unmatched = 0;
+    for (const row of splitWhatsAppWebhook(safeJson(rawBody))) {
+      const conns = row.route.phoneNumberId ? await this.sys.resolveConnectionsByPhoneNumber('whatsapp-cloud', row.route.phoneNumberId) : await this.sys.resolveConnectionsByWaba('whatsapp-cloud', row.route.wabaId ?? '');
+      if (!conns.length) { unmatched++; continue; }
+      for (const conn of conns) { await ingest(this.db, this.queue, conn, { provider: 'whatsapp-cloud', externalEventId: row.eventId, payload: row.payload }); accepted++; }
+    }
+    if (unmatched) this.log.warn(`${unmatched} WhatsApp event(s) for numbers with no connection`);
+    return { ok: true, accepted };
   }
 }
 

@@ -270,6 +270,67 @@ export function buildModels(conn: Connection) {
     readAt: Date,
   });
 
+  const Conversation = make(conn, 'Conversation', {
+    leadId: { type: ObjectId, required: true },
+    channel: { type: String, enum: ['whatsapp', 'sms', 'email'], required: true },
+    connectionId: { type: ObjectId, required: true },
+    externalThreadId: String, // the lead's number on that channel
+    windowExpiresAt: Date,    // WhatsApp 24h customer-service window
+    lastInboundAt: Date,
+    lastMessageAt: Date,
+    lastMessagePreview: String,
+    unreadCount: { type: Number, default: 0 },
+  });
+  const Message = make(conn, 'Message', {
+    conversationId: { type: ObjectId, required: true },
+    leadId: { type: ObjectId, required: true },
+    direction: { type: String, enum: ['in', 'out'], required: true },
+    channel: String,
+    body: String,
+    templateId: ObjectId,
+    source: { type: String, enum: ['agent', 'cadence', 'first_touch', 'inbound', 'system'], default: 'agent' },
+    media: Schema.Types.Mixed,
+    providerMessageId: String,
+    status: { type: String, enum: ['queued', 'sent', 'delivered', 'read', 'failed', 'received'], default: 'queued' },
+    error: String,
+    sentBy: ObjectId,
+    idempotencyKey: String,
+    sendingUntil: Date, // short lease while a provider call is in flight (concurrent duplicate guard)
+  });
+  const MessageTemplate = make(conn, 'MessageTemplate', {
+    channel: { type: String, enum: ['whatsapp', 'sms', 'email'], required: true },
+    name: { type: String, required: true },
+    body: { type: String, required: true },
+    variables: [String],
+    language: { type: String, default: 'en' },
+    category: { type: String, default: 'utility' },
+    connectionId: ObjectId,
+    providerTemplateId: String,
+    dltTemplateId: String,
+    dltHeader: String,
+    status: { type: String, enum: ['draft', 'pending', 'approved', 'rejected'], default: 'draft' },
+    rejectionReason: String,
+  });
+  const Cadence = make(conn, 'Cadence', {
+    name: { type: String, required: true },
+    active: { type: Boolean, default: true },
+    stopOn: { type: Schema.Types.Mixed, default: { inboundReply: true, connectedCall: true, statusChange: true, optOut: true } },
+    steps: [{ _id: false, offsetMinutes: Number, action: { type: String, enum: ['task', 'message'] }, channel: String, templateId: ObjectId, taskType: String, note: String }],
+    enrollOn: { type: Schema.Types.Mixed, default: {} }, // { statusIds?: [], outcomeIds?: [], sourceKinds?: [] }
+  });
+  const CadenceEnrollment = make(conn, 'CadenceEnrollment', {
+    leadId: { type: ObjectId, required: true },
+    cadenceId: ObjectId,
+    dedupeKey: { type: String, required: true },
+    kind: { type: String, enum: ['cadence', 'first_touch'], default: 'cadence' },
+    stopOn: Schema.Types.Mixed,
+    steps: [{ _id: false, runAt: Date, action: String, channel: String, templateId: ObjectId, taskType: String, note: String, done: Boolean, result: String }],
+    stepIndex: { type: Number, default: 0 },
+    state: { type: String, enum: ['active', 'completed', 'stopped'], default: 'active' },
+    nextRunAt: Date,
+    stoppedReason: String,
+  });
+
   /** First matching rule wins (priority asc). */
   const AssignmentRule = make(conn, 'AssignmentRule', {
     name: { type: String, required: true },
@@ -340,6 +401,7 @@ export function buildModels(conn: Connection) {
     outcomeId: ObjectId,
     outcomeLoggedAt: Date,
     outcomeSkips: { type: Number, default: 0 },
+    providerOutcome: String,
     recordingObjectKey: String,
   });
 
@@ -361,7 +423,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

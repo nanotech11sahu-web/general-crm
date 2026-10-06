@@ -42,10 +42,27 @@ export interface ConnectorManifest {
 /** The only events core code ever sees. */
 export type CanonicalEvent =
   | { kind: 'LeadReceived'; externalRef: string; fields: Record<string, unknown> }
-  | { kind: 'CallEvent'; callRef: string; state: 'ringing' | 'answered' | 'ended' | 'recording_ready' }
-  | { kind: 'InboundMessage'; threadId: string; body: string }
-  | { kind: 'MessageStatus'; providerMessageId: string; status: string }
-  | { kind: 'TemplateStatus'; templateId: string; status: string };
+  | { kind: 'CallEvent'; callRef: string; state: 'ringing' | 'answered' | 'ended' | 'recording_ready'; durationS?: number; recordingUrl?: string; outcome?: 'completed' | 'busy' | 'no_answer' | 'failed' | 'canceled' }
+  | { kind: 'InboundMessage'; from: string; providerMessageId: string; body: string; timestamp: Date; profileName?: string; mediaType?: string }
+  | { kind: 'MessageStatus'; providerMessageId: string; status: 'sent' | 'delivered' | 'read' | 'failed'; error?: string }
+  | { kind: 'TemplateStatus'; providerTemplateId?: string; name?: string; language?: string; status: 'approved' | 'rejected' | 'pending'; reason?: string };
+
+export interface OutboundMessage {
+  /** E.164, with the leading +. */
+  to: string;
+  channel: 'whatsapp' | 'sms' | 'email';
+  /** Free text (only allowed by the platform inside the WhatsApp 24h window). */
+  body?: string;
+  template?: { name: string; language: string; variables: string[]; providerTemplateId?: string; dltTemplateId?: string; header?: string };
+}
+export interface ProviderTemplate { providerTemplateId: string; name: string; language: string; status: 'approved' | 'rejected' | 'pending'; category?: string; body?: string; reason?: string }
+
+/** Provider says the message itself was refused (as opposed to a transport problem). */
+export class MessageRejectedError extends Error {
+  constructor(public readonly code: 'window_closed' | 'recipient_unreachable' | 'template_rejected' | 'other', message: string) { super(message); this.name = 'MessageRejectedError'; }
+}
+
+export interface CallRequest { agentNumber: string; leadNumber: string; callbackUrl: string; record?: boolean }
 
 export interface ConnectorContext {
   tenantId: string; connectionId: string; config: Record<string, unknown>;
@@ -78,6 +95,13 @@ export interface Connector {
   parseWebhook?(raw: unknown, ctx?: ConnectorContext): Promise<CanonicalEvent[]>;
   /** Pull leads created since `since` so gaps left by dropped webhooks can be reconciled. */
   backfill?(ctx: ConnectorContext, since: Date): AsyncIterable<BackfillLead>;
+  send?(ctx: ConnectorContext, msg: OutboundMessage): Promise<{ providerMessageId: string }>;
+  syncTemplates?(ctx: ConnectorContext): Promise<ProviderTemplate[]>;
+  submitTemplate?(ctx: ConnectorContext, t: { name: string; language: string; category: string; body: string; sampleValues: string[] }): Promise<{ providerTemplateId: string; status: 'approved' | 'rejected' | 'pending' }>;
+  /** Rings the agent first, then bridges to the lead. The lead's number never reaches the browser. */
+  startCall?(ctx: ConnectorContext, req: CallRequest): Promise<{ providerCallId: string }>;
+  /** Download a recording given the provider URL carried by a webhook. */
+  fetchRecording?(ctx: ConnectorContext, recordingUrl: string): Promise<{ bytes: Buffer; contentType: string }>;
   /** Exchange/refresh the access token; the platform stores the returned credentials encrypted. */
   refresh?(ctx: ConnectorContext): Promise<{ credentials: Record<string, string>; expiresAt: Date }>;
   /** Verify the provider-side webhook subscription still exists; re-create it when missing. */
@@ -130,6 +154,14 @@ export const websiteWebhook: Connector = {
     return [{ kind: 'LeadReceived', externalRef: String(o.id ?? ''), fields: o }];
   },
 };
+
+/** Constant-time check of a shared token carried in `?token=` or `x-webhook-token` (providers with unsigned callbacks). */
+export function verifyToken(req: RawRequest, secret: string): boolean {
+  const given = String(req.query?.token ?? h(req, 'x-webhook-token') ?? '');
+  if (!secret || !given) return false;
+  const a = Buffer.from(given), b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 export function defaultRegistry() { return new ConnectorRegistry().register(websiteWebhook); }
 export * from './http';

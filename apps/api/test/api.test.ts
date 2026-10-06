@@ -773,3 +773,140 @@ describe('realtime SSE stream (phase 3c)', () => {
     many.forEach((m) => m.close()); sixth.close();
   });
 });
+
+describe('messaging API (phase 4a, fixtures for WhatsApp Cloud + MSG91)', () => {
+  const WABA = '1234567890'; const PHONE_ID = '9876543210';
+  const wa = { subscribed: false, sends: [] as any[], templates: [] as any[] };
+  const sms = { sends: [] as any[] };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url); const path = u.pathname.replace(/^\/v26\.0\//, '');
+    if (u.hostname === 'control.msg91.com') { sms.sends.push(JSON.parse(init.body)); return resp(200, { type: 'success', message: `msg91-req-${sms.sends.length}` }); }
+    if (u.hostname !== 'graph.facebook.com') return resp(404, {});
+    if (path === 'oauth/access_token') return resp(200, { access_token: 'wa-business-token' });
+    if (path === PHONE_ID && !init?.method) return resp(200, { id: PHONE_ID, display_phone_number: '+91 98000 11111', verified_name: 'Acme Realty', quality_rating: 'GREEN' });
+    if (path === WABA) return resp(200, { name: 'Acme WABA' });
+    if (path === `${WABA}/subscribed_apps`) { if (init?.method === 'POST') { wa.subscribed = true; return resp(200, { success: true }); } return resp(200, { data: wa.subscribed ? [{ id: 'APP1' }] : [] }); }
+    if (path === `${PHONE_ID}/messages`) { wa.sends.push(JSON.parse(init.body)); return resp(200, { messages: [{ id: `wamid.OUT${wa.sends.length}` }] }); }
+    if (path.startsWith(`${WABA}/message_templates`)) {
+      if (init?.method === 'POST') { const b = JSON.parse(init.body); wa.templates.push(b); return resp(200, { id: `prov-${b.name}`, status: 'PENDING' }); }
+      return resp(200, { data: wa.templates.map((t) => ({ id: `prov-${t.name}`, name: t.name, language: t.language, status: 'APPROVED', category: t.category, components: t.components })) });
+    }
+    return resp(404, { error: { code: 100, message: `unmocked ${path}` } });
+  };
+  let owner: string; let tenantId: string; let agent: { tok: string; id: string }; let other: { tok: string; id: string };
+  let waConn: string; let leadId: string; let convId: string;
+  const inboxRow = async (payload: any, eventId: string) => {
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const row: any = await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.inbox.create({ connectionId: waConn, provider: 'whatsapp-cloud', externalEventId: eventId, rawPayload: payload, signatureValid: true, status: 'received' }));
+    return (await request(http).post(`/v1/inbox/${row._id}/replay`).set(auth(owner)).expect(201)).body;
+  };
+
+  beforeAll(async () => {
+    providerFetch = fx;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'msg-owner@x.io', password: 'correct-horse-9', name: 'Olivia', tenantName: 'Msg Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    const mk = async (email: string) => {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'Asha Agent', password: 'agent-pass-123' }).expect(201);
+      return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string };
+    };
+    agent = await mk('msg-a1@x.io'); other = await mk('msg-a2@x.io');
+    leadId = (await request(http).post('/v1/leads').set(auth(agent.tok)).send({ name: 'Anita Desai', contacts: [{ value: '9812345678' }] }).expect(201)).body.leadId;
+  });
+
+  it('no channel connected: buttons hidden, sends refused, fallback links work and are labelled self-reported', async () => {
+    expect((await request(http).get('/v1/channels').set(auth(agent.tok)).expect(200)).body).toMatchObject({ whatsapp: { connected: false }, sms: { connected: false } });
+    await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'key-00000001').send({ leadId, channel: 'whatsapp', body: 'hi' }).expect(409).expect((r) => expect(r.body.code).toBe('channel_not_connected'));
+    const l = (await request(http).post('/v1/messages/launch').set(auth(agent.tok)).send({ leadId, channel: 'whatsapp', body: 'Hello Anita & welcome' }).expect(201)).body;
+    expect(l).toMatchObject({ selfReported: true }); expect(l.url).toBe('https://wa.me/919812345678?text=Hello%20Anita%20%26%20welcome');
+    expect((await request(http).post('/v1/messages/launch').set(auth(agent.tok)).send({ leadId, channel: 'sms' }).expect(201)).body.url).toBe('sms:+919812345678');
+    const tl = (await request(http).get(`/v1/leads/${leadId}/timeline`).set(auth(agent.tok)).expect(200)).body.items;
+    expect(tl.filter((a: any) => a.type === 'message_out' && a.payload.selfReported)).toHaveLength(2);
+    await request(http).post('/v1/messages/launch').set(auth(other.tok)).send({ leadId, channel: 'sms' }).expect(403); // not their lead
+  });
+
+  it('WhatsApp Embedded Signup connects a number, subscribes the app and exposes the channel', async () => {
+    await request(http).post('/v1/oauth/whatsapp/embedded-signup').set(auth(agent.tok)).send({ code: 'authcode1', wabaId: WABA, phoneNumberId: PHONE_ID }).expect(403);
+    await request(http).post('/v1/oauth/whatsapp/embedded-signup').set(auth(owner)).send({ code: 'x', wabaId: 'abc', phoneNumberId: PHONE_ID }).expect(400); // validated ids
+    const r = (await request(http).post('/v1/oauth/whatsapp/embedded-signup').set(auth(owner)).send({ code: 'authcode1', wabaId: WABA, phoneNumberId: PHONE_ID, name: 'Main WhatsApp' }).expect(201)).body;
+    waConn = r.connection.id;
+    expect(r.connection).toMatchObject({ provider: 'whatsapp-cloud', status: 'verified', config: { wabaId: WABA, phoneNumberId: PHONE_ID, displayPhone: '+91 98000 11111' } });
+    expect(JSON.stringify(r)).not.toContain('wa-business-token');
+    expect(r.resubscribed).toBe(true); expect(wa.subscribed).toBe(true);
+    expect((await request(http).get('/v1/channels').set(auth(agent.tok)).expect(200)).body.whatsapp.connected).toBe(true);
+    await request(http).post('/v1/messages/launch').set(auth(agent.tok)).send({ leadId, channel: 'whatsapp' }).expect(409); // connected: use the platform
+  });
+
+  it('inbound WhatsApp message opens the window; free text then sends once per Idempotency-Key; thread and unread work', async () => {
+    const out = await inboxRow({ kind: 'message', phone_number_id: PHONE_ID, from: '919812345678', id: 'wamid.IN1', timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'Is the 3BHK still available?' }, profileName: 'Anita Desai' }, 'wamid.IN1');
+    expect(out.status).toBe('done');
+    const convs = (await request(http).get('/v1/conversations').query({ leadId }).set(auth(agent.tok)).expect(200)).body;
+    expect(convs).toHaveLength(1); expect(convs[0]).toMatchObject({ channel: 'whatsapp', unreadCount: 1 }); convId = convs[0]._id;
+    await request(http).get(`/v1/conversations/${convId}/messages`).set(auth(other.tok)).expect(403);
+    const thread = (await request(http).get(`/v1/conversations/${convId}/messages`).set(auth(agent.tok)).expect(200)).body;
+    expect(thread.items.map((m: any) => [m.direction, m.body])).toEqual([['in', 'Is the 3BHK still available?']]);
+
+    await request(http).post('/v1/messages').set(auth(agent.tok)).send({ leadId, channel: 'whatsapp', body: 'yes' }).expect(400); // Idempotency-Key required
+    const send = () => request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'tap-0000-0001').send({ leadId, channel: 'whatsapp', body: 'Yes, it is. Can I call you at 6 PM?' });
+    const m1 = (await send().expect(201)).body; const m2 = (await send().expect(201)).body;
+    expect(m1.message.status).toBe('sent'); expect(m2.duplicate).toBe(true); expect(m2.message._id).toBe(m1.message._id);
+    expect(wa.sends).toHaveLength(1);
+    expect(wa.sends[0]).toMatchObject({ to: '919812345678', type: 'text', text: { body: 'Yes, it is. Can I call you at 6 PM?' } });
+    await request(http).post(`/v1/conversations/${convId}/read`).set(auth(agent.tok)).expect(201);
+    expect((await request(http).get('/v1/conversations').query({ leadId }).set(auth(agent.tok)).expect(200)).body[0].unreadCount).toBe(0);
+  });
+
+  it('delivery status webhooks advance the message; STOP opts the lead out and blocks sends', async () => {
+    await inboxRow({ kind: 'status', phone_number_id: PHONE_ID, id: 'wamid.OUT1', status: 'delivered', recipient_id: '919812345678' }, 'status:wamid.OUT1:delivered');
+    await inboxRow({ kind: 'status', phone_number_id: PHONE_ID, id: 'wamid.OUT1', status: 'read', recipient_id: '919812345678' }, 'status:wamid.OUT1:read');
+    const items = (await request(http).get(`/v1/conversations/${convId}/messages`).set(auth(agent.tok)).expect(200)).body.items;
+    expect(items.find((m: any) => m.direction === 'out').status).toBe('read');
+    await inboxRow({ kind: 'message', phone_number_id: PHONE_ID, from: '919812345678', id: 'wamid.IN2', timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'Stop' } }, 'wamid.IN2');
+    await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'after-stop-001').send({ leadId, channel: 'whatsapp', body: 'ping' }).expect(409).expect((r) => expect(r.body.code).toBe('opted_out'));
+    expect(wa.sends).toHaveLength(1);
+    const lead = (await request(http).get(`/v1/leads/${leadId}`).set(auth(agent.tok)).expect(200)).body;
+    expect(JSON.stringify(lead)).not.toContain('9812345678'); // custody still holds
+  });
+
+  it('templates: admin-only create, submit to Meta, sync approves, then a template send goes out with rendered variables', async () => {
+    await request(http).post('/v1/templates').set(auth(agent.tok)).send({ channel: 'whatsapp', name: 'x', body: 'y' }).expect(403);
+    await request(http).post('/v1/templates').set(auth(owner)).send({ channel: 'whatsapp', name: 'Bad Name', body: 'x' }).expect(422);
+    const t = (await request(http).post('/v1/templates').set(auth(owner)).send({ channel: 'whatsapp', name: 'site_visit', body: 'Hi {{1}}, this is {{2}} from {{3}}. Shall we book your site visit?', variables: ['first_name', 'agent_name', 'company'], category: 'utility' }).expect(201)).body;
+    expect(t.status).toBe('draft');
+    expect((await request(http).post(`/v1/templates/${t._id}/submit`).set(auth(owner)).expect(201)).body).toMatchObject({ status: 'pending', providerTemplateId: 'prov-site_visit' });
+    expect(wa.templates[0]).toMatchObject({ name: 'site_visit', category: 'UTILITY', components: [{ type: 'BODY', example: { body_text: [['Asha', 'Ravi', 'Acme']] } }] });
+    expect((await request(http).post('/v1/templates/sync').set(auth(owner)).expect(201)).body).toEqual({ updated: 1, imported: 0 });
+    expect((await request(http).get('/v1/templates').query({ status: 'approved' }).set(auth(agent.tok)).expect(200)).body.map((x: any) => x.name)).toEqual(['site_visit']);
+    // a different lead that has not opted out; the template works outside the 24h window
+    const l2 = (await request(http).post('/v1/leads').set(auth(agent.tok)).send({ name: 'Rohan Mehta', contacts: [{ value: '9812300000' }] }).expect(201)).body.leadId;
+    const r = (await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'tpl-send-0001').send({ leadId: l2, channel: 'whatsapp', templateId: t._id }).expect(201)).body;
+    expect(r.message.body).toBe('Hi Rohan, this is Asha Agent from Msg Co. Shall we book your site visit?');
+    expect(wa.sends.at(-1).template).toEqual({ name: 'site_visit', language: { code: 'en' }, components: [{ type: 'body', parameters: ['Rohan', 'Asha Agent', 'Msg Co'].map((text) => ({ type: 'text', text })) }] });
+    await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'tpl-send-0002').send({ leadId: l2, channel: 'whatsapp', body: 'free text outside window' }).expect(409).expect((x) => expect(x.body.code).toBe('window_closed'));
+  });
+
+  it('SMS (MSG91): creating the connection reveals the webhook token once; DLT approval gates sending', async () => {
+    const c = (await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'sms-msg91', name: 'MSG91', credentials: { authKey: 'AUTHKEY1234567890ab' }, config: { senderId: 'ACMEIN', dltEntityId: '1101234567890' } }).expect(201)).body;
+    expect(c.connection.status).toBe('verified'); expect(c.revealedOnce.webhookToken).toHaveLength(43);
+    expect(c.connection.webhookPath).toMatch(/^\/hooks\/sms-msg91\//);
+    const lead2 = (await request(http).get('/v1/leads').query({ q: 'Rohan' }).set(auth(agent.tok)).expect(200)).body.items[0]._id;
+    await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'sms-free-0001').send({ leadId: lead2, channel: 'sms', body: 'free text' }).expect(409).expect((r) => expect(r.body.code).toBe('dlt_template_required'));
+    const t = (await request(http).post('/v1/templates').set(auth(owner)).send({ channel: 'sms', name: 'visit_confirm', body: 'Hi {{1}}, your site visit is confirmed. -ACME', variables: ['first_name'] }).expect(201)).body;
+    await request(http).post(`/v1/templates/${t._id}/approve`).set(auth(owner)).expect(422).expect((r) => expect(r.body.code).toBe('dlt_incomplete'));
+    await request(http).put(`/v1/templates/${t._id}`).set(auth(owner)).send({ dltTemplateId: '1107161234567890', providerTemplateId: 'flow-abc', dltHeader: 'ACMEIN' }).expect(200);
+    expect((await request(http).post(`/v1/templates/${t._id}/approve`).set(auth(owner)).expect(201)).body.status).toBe('approved');
+    const r = (await request(http).post('/v1/messages').set(auth(agent.tok)).set('Idempotency-Key', 'sms-tpl-00001').send({ leadId: lead2, channel: 'sms', templateId: t._id }).expect(201)).body;
+    expect(r.message.status).toBe('sent');
+    expect(sms.sends[0]).toEqual({ template_id: 'flow-abc', short_url: '0', recipients: [{ mobiles: '919812300000', VAR1: 'Rohan' }] });
+    expect((await request(http).get('/v1/channels').set(auth(agent.tok)).expect(200)).body.sms.connected).toBe(true);
+  });
+
+  it('other tenants see none of it', async () => {
+    const o2 = await signup('msg-other');
+    expect((await request(http).get('/v1/channels').set(auth(o2.token)).expect(200)).body).toMatchObject({ whatsapp: { connected: false }, sms: { connected: false } });
+    expect((await request(http).get('/v1/templates').set(auth(o2.token)).expect(200)).body).toHaveLength(0);
+    await request(http).get(`/v1/conversations/${convId}/messages`).set(auth(o2.token)).expect(404);
+    await request(http).post('/v1/messages').set(auth(o2.token)).set('Idempotency-Key', 'cross-0000001').send({ leadId, channel: 'whatsapp', body: 'x' }).expect(404);
+  });
+});

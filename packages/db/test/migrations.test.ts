@@ -14,7 +14,7 @@ it('migrations are idempotent and reversible; tenant-owned indexes lead with ten
   for (const i of INDEXES) {
     if (['tenants', 'users'].includes(i.collection)) continue;
     const leadsWithTenant = Object.keys(i.keys)[0] === 'tenantId';
-    const globalSafe = ['publicId', 'tokenHash', 'userId', 'expiresAt', 'receivedAt', 'dispatchedAt', 'provider', 'at', 'createdAt', 'dueAt', 'sla.claimDueAt', 'sla.firstContactDueAt'].includes(Object.keys(i.keys)[0]);
+    const globalSafe = ['publicId', 'tokenHash', 'userId', 'expiresAt', 'receivedAt', 'dispatchedAt', 'provider', 'at', 'createdAt', 'dueAt', 'nextRunAt', 'sla.claimDueAt', 'sla.firstContactDueAt'].includes(Object.keys(i.keys)[0]);
     expect(leadsWithTenant || globalSafe, `${i.collection} ${JSON.stringify(i.keys)}`).toBe(true);
   }
   expect(await migrateDown(db)).toBe('20250101000001-init');

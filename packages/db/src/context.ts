@@ -29,6 +29,7 @@ export const SYSTEM_OPERATIONS = [
   'outbox.dispatch',
   'tasks.sweep',
   'sla.sweep',
+  'cadence.sweep',
   'scheduler.listConnections',
   'auth.findUserByEmail',
   'auth.listMemberships',

@@ -12,3 +12,6 @@ export * from './inbox';
 export * from './integrity';
 export * from './do';
 export * from './routing';
+export * from './messaging';
+export * from './storage';
+export * from './telephony';

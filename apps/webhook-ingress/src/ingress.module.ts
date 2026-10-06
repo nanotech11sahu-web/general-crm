@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { createRegistry } from '@leaddesk/connectors';
 import { DbModule } from '@leaddesk/platform';
-import { HooksController, MetaHooksController, REGISTRY } from './hooks.controller';
+import { HooksController, MetaHooksController, REGISTRY, WhatsAppHooksController } from './hooks.controller';
 import { createInboxQueue, INBOX_QUEUE } from './inbox-queue';
 
 @Module({
   imports: [DbModule],
-  controllers: [MetaHooksController, HooksController],
+  controllers: [MetaHooksController, WhatsAppHooksController, HooksController],
   providers: [
     { provide: REGISTRY, useFactory: () => createRegistry(process.env) },
     { provide: INBOX_QUEUE, useFactory: () => createInboxQueue() },

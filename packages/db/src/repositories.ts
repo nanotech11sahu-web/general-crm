@@ -61,6 +61,11 @@ export function createRepositories(m: Models) {
     routingDecisions: new TenantScopedRepository(m.RoutingDecision),
     slaPolicies: new TenantScopedRepository(m.SlaPolicy),
     presence: new TenantScopedRepository(m.Presence),
+    conversations: new TenantScopedRepository(m.Conversation),
+    messages: new TenantScopedRepository(m.Message),
+    templates: new TenantScopedRepository(m.MessageTemplate),
+    cadences: new TenantScopedRepository(m.Cadence),
+    enrollments: new TenantScopedRepository(m.CadenceEnrollment),
     callSessions: new TenantScopedRepository(m.CallSession),
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
@@ -94,6 +99,16 @@ export function createSystemOps(m: Models) {
     /** App-level webhooks (Meta) arrive per page, not per connection: find every live connection that owns the page. */
     resolveConnectionsByPage: (provider: string, pageId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.pageIds': pageId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** WhatsApp Cloud webhooks are per phone number: find the live connection(s) that own it. */
+    resolveConnectionsByPhoneNumber: (provider: string, phoneNumberId: string) =>
+      runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.phoneNumberId': phoneNumberId, status: { $ne: 'revoked' } }).lean().exec()),
+    resolveConnectionsByWaba: (provider: string, wabaId: string) =>
+      runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.wabaId': wabaId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** Cadence sweeper: enrollments whose next step is due (cross-tenant; handled per tenant). */
+    dueEnrollments: (now: Date, limit = 500) =>
+      runAsSystem('cadence.sweep', () => m.CadenceEnrollment.find({ state: 'active', nextRunAt: { $lte: now } }, { tenantId: 1 }).sort({ nextRunAt: 1 }).limit(limit).lean().exec()),
 
     /** Task sweeper: open tasks past their due date across tenants (grace is applied by the caller). */
     overdueTasks: (before: Date, limit = 500) =>
