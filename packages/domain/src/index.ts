@@ -26,3 +26,4 @@ export * from './billing';
 export * from './demo';
 export * from './mail';
 export * from './autopilot';
+export * from './gst';

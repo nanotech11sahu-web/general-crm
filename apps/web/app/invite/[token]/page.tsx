@@ -1,10 +1,12 @@
 'use client';
 import { useState } from 'react';
+import { useHydrated } from '../../../lib/hydrated';
 import { useParams, useRouter } from 'next/navigation';
 import { ApiError, api, setToken } from '../../../lib/api';
 
 /** Landing page for an invitation link. */
 export default function Invite() {
+  const hydrated = useHydrated();
   const { token } = useParams<{ token: string }>(); const router = useRouter();
   const [name, setName] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) {
@@ -19,7 +21,7 @@ export default function Invite() {
         <label htmlFor="n">Your name</label><input id="n" required maxLength={120} value={name} onChange={(e) => setName(e.target.value)} />
         <label htmlFor="p">Choose a password (10+ characters)</label><input id="p" type="password" required minLength={10} maxLength={128} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         {error && <p className="err" role="alert">{error}</p>}
-        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy}>{busy ? 'Joining…' : 'Join'}</button></div>
+        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy || !hydrated}>{busy ? 'Joining…' : 'Join'}</button></div>
       </form></main>
   );
 }

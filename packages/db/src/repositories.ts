@@ -69,6 +69,7 @@ export function createRepositories(m: Models) {
     subscriptions: new TenantScopedRepository(m.Subscription),
     aiSuggestions: new TenantScopedRepository(m.AiSuggestion),
     knowledge: new TenantScopedRepository(m.KnowledgeEntry),
+    invoices: new TenantScopedRepository(m.Invoice),
     aiUsage: new TenantScopedRepository(m.AiUsage),
     cadences: new TenantScopedRepository(m.Cadence),
     enrollments: new TenantScopedRepository(m.CadenceEnrollment),
@@ -203,6 +204,9 @@ export function createSystemOps(m: Models) {
 
     findUserByEmail: (email: string) =>
       runAsSystem('auth.findUserByEmail', () => m.User.findOne({ email: email.toLowerCase() }).exec()),
+
+    /** Next gapless invoice sequence number for a financial year. */
+    nextInvoiceSeq: (fy: string) => runAsSystem('billing.invoice', async () => ((await m.InvoiceSequence.findOneAndUpdate({ fy }, { $inc: { seq: 1 }, $setOnInsert: { fy } }, { upsert: true, new: true }).lean().exec()) as any).seq as number),
 
     /** Password reset (the user is signed out, so there is no tenant context). Only token hashes are stored. */
     createPasswordReset: (r: { userId: any; tokenHash: string; expiresAt: Date; ip?: string }) => runAsSystem('auth.passwordReset', () => m.PasswordReset.create(r)),

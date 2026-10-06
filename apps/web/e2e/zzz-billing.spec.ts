@@ -28,6 +28,12 @@ test('a signed-in visitor skips the landing page; the billing page shows the tri
   for (const k of ['starter', 'growth', 'scale']) await expect(page.getByTestId(`plan-${k}`)).toBeVisible();
   await page.getByTestId('plan-growth').getByRole('button', { name: 'Choose Growth' }).click();
   await expect(page.getByRole('alert').filter({ hasText: /not set up|Contact support/ })).toBeVisible(); // e2e stack has no payment provider
+  // GST billing details are validated by the server and saved
+  await page.getByLabel('Legal / business name').fill('E2E Realty Pvt Ltd'); await page.getByLabel('Address').fill('12 Station Road'); await page.getByLabel('City').fill('Pune'); await page.getByLabel('PIN code').fill('411001'); await page.getByLabel('Billing email').fill('accounts@e2e.test'); await page.getByLabel(/GSTIN/).fill('27AAPFU0939F1ZX');
+  await page.getByLabel('State').selectOption('27'); await page.getByRole('button', { name: 'Save billing details' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: /billing details need attention/i })).toBeVisible();
+  await page.getByLabel(/GSTIN/).fill('27AAPFU0939F1ZV'); await page.getByRole('button', { name: 'Save billing details' }).click();
+  await expect(page.getByText('Billing details saved')).toBeVisible();
 });
 
 test('sample data: one click to look around, one click to remove it; sample leads cannot be called', async ({ browser }) => {
@@ -49,12 +55,13 @@ test('sample data: one click to look around, one click to remove it; sample lead
 test('when the trial ends the workspace turns read-only with a clear message; reading and billing still work', async ({ page }) => {
   expect((await fetch('http://127.0.0.1:3301/expire-trial', { method: 'POST' })).status).toBe(200);
   await signIn(page, agent);
-  await expect.poll(async () => page.getByTestId('readonly-banner').count(), { timeout: 20_000, intervals: [500, 1000] }).toBe(1); // entitlements are cached for up to 10 s
+  // entitlements are cached for up to 10 s, and the banner and the write guard read the same cache, so reload until both agree
+  await expect.poll(async () => { await page.reload(); await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible(); return page.getByTestId('readonly-banner').count(); }, { timeout: 30_000, intervals: [1000, 2000] }).toBe(1);
   await expect(page.getByTestId('readonly-banner')).toContainText('free trial has ended');
   await expect(page.getByRole('heading', { name: 'Today' })).toBeVisible(); // reading keeps working
   const cur = page.getByTestId('current-item');
   if (await cur.count()) { await cur.getByRole('button', { name: /^(Call|Reply|Log outcome)$/ }).first().click(); await expect(page.getByRole('alert').filter({ hasText: /trial has ended/ }).first()).toBeVisible(); }
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('button', { name: 'Sign out' }).click(); await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible(); // let the app's own redirect finish before navigating again
   await signIn(page, owner);
   await page.getByRole('link', { name: 'Open billing' }).click();
   await expect(page.getByTestId('current-plan')).toContainText('expired');

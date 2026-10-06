@@ -11,7 +11,7 @@ function make(conn: Connection, name: string, def: Record<string, any>, o: { glo
 }
 
 /** Collections that are not tenant-owned. */
-export const GLOBAL_COLLECTIONS = ['tenants', 'users', 'billingevents', 'platformaudits', 'passwordresets'] as const;
+export const GLOBAL_COLLECTIONS = ['tenants', 'users', 'billingevents', 'platformaudits', 'passwordresets', 'invoicesequences'] as const;
 
 export function buildModels(conn: Connection) {
   const Tenant = make(conn, 'Tenant', {
@@ -23,6 +23,7 @@ export function buildModels(conn: Connection) {
     locale: { type: String, default: 'en' },
     industryPreset: { type: String, default: 'generic' },
     settings: { type: Schema.Types.Mixed, default: {} },
+    billingProfile: Schema.Types.Mixed, // { legalName, gstin, addressLine, city, state, stateCode, postalCode, email } for tax invoices
     status: { type: String, enum: ['active', 'suspended', 'deleted'], default: 'active' },
   }, { global: true });
 
@@ -371,6 +372,7 @@ export function buildModels(conn: Connection) {
     cancelAtPeriodEnd: { type: Boolean, default: false },
     provider: String, // 'razorpay' | 'manual'
     providerSubscriptionId: String,
+    scheduledChange: Schema.Types.Mixed, // a downgrade chosen mid-cycle: { plan, seats, at } applied when the next renewal charge arrives
     pending: Schema.Types.Mixed, // checkout started, not yet confirmed by the provider: { plan, seats, providerSubscriptionId, url, createdAt }
     note: String,
   });
@@ -394,6 +396,21 @@ export function buildModels(conn: Connection) {
     usedAt: Date,
     ip: String,
   }, { global: true });
+  /** Tax invoices / payment receipts for subscription payments. One per provider payment (idempotent), numbered sequentially per financial year. */
+  const Invoice = make(conn, 'Invoice', {
+    number: { type: String, required: true },
+    fy: String,
+    paymentId: { type: String, required: true },
+    issuedAt: { type: Date, required: true },
+    kind: { type: String, enum: ['tax_invoice', 'receipt'], default: 'receipt' }, // a receipt has no GST split (supplier details not configured)
+    plan: String, planName: String, seats: Number, periodEnd: Date,
+    currency: { type: String, default: 'INR' },
+    grossPaise: Number, taxablePaise: Number, ratePct: Number, cgstPaise: Number, sgstPaise: Number, igstPaise: Number,
+    intraState: Boolean, placeOfSupply: String,
+    supplier: Schema.Types.Mixed, customer: Schema.Types.Mixed,
+  });
+  /** Gapless numbering per financial year across all workspaces (the supplier is one legal entity). */
+  const InvoiceSequence = make(conn, 'InvoiceSequence', { fy: { type: String, required: true }, seq: { type: Number, default: 0 } }, { global: true });
   /** Operator (support) actions on workspaces. Global and append-only by convention. */
   const PlatformAudit = make(conn, 'PlatformAudit', {
     action: { type: String, required: true },
@@ -517,7 +534,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, PasswordReset, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, PlatformAudit, Suppression, AiSuggestion, KnowledgeEntry, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, Invoice, InvoiceSequence, PlatformAudit, Suppression, AiSuggestion, KnowledgeEntry, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

@@ -133,6 +133,13 @@ export const INDEXES_V5: Idx[] = [
   { collection: 'callsessions', keys: { tenantId: 1, 'analysis.status': 1, startedAt: -1 }, options: { name: 'v5_calls_analysis', partialFilterExpression: { 'analysis.status': { $exists: true } } } },
 ];
 
+export const INDEXES_V6: Idx[] = [
+  { collection: 'invoices', keys: { tenantId: 1, paymentId: 1 }, options: { name: 'v6_invoice_payment', unique: true } }, // a replayed webhook cannot issue a second invoice
+  { collection: 'invoices', keys: { tenantId: 1, issuedAt: -1 }, options: { name: 'v6_invoice_issued' } },
+  { collection: 'invoices', keys: { tenantId: 1, number: 1 }, options: { name: 'v6_invoice_number', unique: true } },
+  { collection: 'invoicesequences', keys: { fy: 1 }, options: { name: 'v6_invoice_seq_fy', unique: true } },
+];
+
 export const COLLECTIONS = [...new Set(INDEXES.map((i) => i.collection))];
 
 export async function ensureCollections(db: Db) {

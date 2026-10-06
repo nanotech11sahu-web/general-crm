@@ -1,9 +1,11 @@
 'use client';
 import { useState } from 'react';
+import { useHydrated } from '../../lib/hydrated';
 import { ApiError, api } from '../../lib/api';
 
 /** Ask for a password reset link. The answer is identical for every address, so it never reveals who has an account. */
 export default function Forgot() {
+  const hydrated = useHydrated();
   const [email, setEmail] = useState(''); const [done, setDone] = useState<{ message: string; emailEnabled: boolean } | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError(null);
@@ -17,7 +19,7 @@ export default function Forgot() {
         <form className="card" onSubmit={submit}><h2>Reset your password</h2>
           <label htmlFor="email">Your email</label><input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
           {error && <p className="err" role="alert">{error}</p>}
-          <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy}>{busy ? 'Sending…' : 'Email me a link'}</button></div></form>)}
+          <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy || !hydrated}>{busy ? 'Sending…' : 'Email me a link'}</button></div></form>)}
       <p className="reason" style={{ textAlign: 'center' }}><a href="/login">Back to sign in</a></p></main>
   );
 }

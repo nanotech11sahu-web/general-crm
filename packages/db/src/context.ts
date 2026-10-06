@@ -42,6 +42,7 @@ export const SYSTEM_OPERATIONS = [
   'auth.refreshToken',
   'auth.acceptInvitation',
   'auth.passwordReset',
+  'billing.invoice',
   'mail.sweep',
   'migration',
   'test',

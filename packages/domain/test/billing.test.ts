@@ -11,14 +11,14 @@ let rs: MongoMemoryReplSet; let router: TenantDbRouter; let db: any; let sys: an
 const DAY = 86_400_000; const T0 = new Date('2026-03-10T06:30:00Z');
 const clock = { t: T0 };
 const as = <T>(t: string, fn: () => Promise<T>) => runWithTenant(t, fn, { userId: '65f000000000000000000001' });
-const calls: any[] = [];
+const calls: any[] = []; const whens: (string | undefined)[] = [];
 const fakeProvider: PaymentProvider = {
   id: 'razorpay',
   async createSubscription(i) { calls.push(['create', i]); return { providerSubscriptionId: `sub_${calls.length}`, url: `https://rzp.io/i/${calls.length}` }; },
-  async cancel(id, atEnd) { calls.push(['cancel', id, atEnd]); }, async updateSeats(id, n) { calls.push(['seats', id, n]); },
+  async cancel(id, atEnd) { calls.push(['cancel', id, atEnd]); }, async updateSeats(id, n, when) { calls.push(['seats', id, n]); whens.push(when); }, async changePlan(id, plan, seats, when) { calls.push(['plan', id, plan, seats, when]); },
   verifyWebhook: () => true, eventId: () => 'e', parseEvent: () => null,
 };
-const svc = (t?: PaymentProvider) => new BillingService(db, () => clock.t, t);
+const svc = (t?: PaymentProvider) => new BillingService(db, () => clock.t, t, undefined, sys);
 const mkTenant = async (slug: string) => { const t: any = await runAsSystem('test', () => db.models.Tenant.create({ name: slug, slug })); const id = String(t._id); await as(id, () => seedPreset(db.repos, 'generic')); return id; };
 const addMember = (t: string, n = 1) => as(t, async () => { for (let i = 0; i < n; i++) await db.repos.memberships.create({ userId: `65f0000000000000000${String(Math.floor(Math.random() * 1e5)).padStart(5, '0')}`, role: 'agent', status: 'active' }); });
 
@@ -154,6 +154,77 @@ describe('checkout, seats, cancel and provider events', () => {
     clock.t = T0;
   });
 
+  it('invoices: a GST tax invoice per payment (once), CGST+SGST within the supplier\'s state, IGST across states, a plain receipt when the supplier is not configured', async () => {
+    clock.t = T0; const T = await mkTenant('inv1'); await addMember(T, 1);
+    await as(T, () => svc().setManual({ plan: 'growth', seats: 5, periodEnd: new Date(T0.getTime() + 30 * DAY) }));
+    await as(T, () => db.repos.subscriptions.updateOne({}, { $set: { provider: 'razorpay', providerSubscriptionId: 'sub_inv1' } }));
+    const pay = (id: string, paise: number) => ({ paymentId: id, amountPaise: paise, currency: 'INR', paidAt: new Date('2026-03-10T06:30:00Z') });
+    const charge = (id: string, paise: number): ProviderEvent => ({ provider: 'razorpay', eventId: `ch-${id}`, kind: 'charged', providerSubscriptionId: 'sub_inv1', tenantId: T, payment: pay(id, paise) });
+    // 1. supplier not configured: honest receipt, no GST split
+    delete process.env.SUPPLIER_NAME;
+    await as(T, () => svc().applyProviderEvent(charge('pay_receipt0001', 11_800)));
+    expect(await as(T, () => db.repos.invoices.find({}))).toEqual([expect.objectContaining({ kind: 'receipt', grossPaise: 11_800, number: 'RCPT-ECEIPT0001' })]);
+    // 2. configured supplier (Maharashtra) and a Karnataka customer -> IGST
+    Object.assign(process.env, { SUPPLIER_NAME: 'Acme Software Pvt Ltd', SUPPLIER_GSTIN: '27AAPFU0939F1ZV', SUPPLIER_ADDRESS: '1 MG Road, Pune 411001', SUPPLIER_SAC: '998314', INVOICE_PREFIX: 'LD' });
+    await expect(as(T, () => svc().setProfile({ legalName: 'Beta Realty', addressLine: '5 Brigade Rd', city: 'Bengaluru', postalCode: '560001', email: 'a@b.co', stateCode: '29', gstin: '27AAPFU0939F1ZX' }))).rejects.toMatchObject({ code: 'invalid_billing_profile', details: { gstin: expect.stringContaining('last character') } });
+    await expect(as(T, () => svc().setProfile({ legalName: 'Beta Realty', addressLine: '5 Brigade Rd', city: 'Bengaluru', postalCode: '5600', email: 'nope', stateCode: '29' }))).rejects.toMatchObject({ details: { postalCode: expect.any(String), email: expect.any(String) } });
+    await as(T, () => svc().setProfile({ legalName: 'Beta Realty', addressLine: '5 Brigade Rd', city: 'Bengaluru', postalCode: '560001', email: 'a@b.co', stateCode: '29' }));
+    await as(T, () => svc().applyProviderEvent(charge('pay_inter000001', 649_800)));
+    const inter: any = await as(T, () => db.repos.invoices.findOne({ paymentId: 'pay_inter000001' }));
+    expect(inter).toMatchObject({ kind: 'tax_invoice', number: expect.stringMatching(/^LD\/2025-26\/\d{6}$/), grossPaise: 649_800, taxablePaise: 550_678, igstPaise: 99_122, cgstPaise: 0, sgstPaise: 0, intraState: false, placeOfSupply: '29' });
+    expect(inter.taxablePaise + inter.igstPaise).toBe(649_800); expect(inter.supplier).toMatchObject({ gstin: '27AAPFU0939F1ZV', sac: '998314' }); expect(inter.customer).toMatchObject({ legalName: 'Beta Realty', stateCode: '29', state: 'Karnataka' });
+    // 3. same state -> CGST + SGST; replay of the same payment issues nothing new; numbers are sequential
+    await as(T, () => svc().setProfile({ stateCode: '27', gstin: '27AAPFU0939F1ZV' }));
+    await as(T, () => svc().applyProviderEvent(charge('pay_intra000001', 11_800)));
+    await as(T, () => svc().applyProviderEvent(charge('pay_intra000001', 11_800)));
+    const all: any[] = await as(T, () => svc().invoices()); expect(all.filter((i) => i.kind === 'tax_invoice')).toHaveLength(2);
+    const intra: any = await as(T, () => db.repos.invoices.findOne({ paymentId: 'pay_intra000001' }));
+    expect(intra).toMatchObject({ taxablePaise: 10_000, cgstPaise: 900, sgstPaise: 900, igstPaise: 0, intraState: true });
+    const seqs = [inter, intra].map((i) => Number(i.number.split('/')[2])); expect(seqs[1]).toBe(seqs[0] + 1);
+    const detail: any = await as(T, () => svc().invoice(String(intra._id))); expect(detail.amountInWords).toBe('Rupees One Hundred Eighteen Only'); expect(detail.placeOfSupplyName).toBe('Maharashtra');
+    // other workspaces never see these invoices
+    const other = await mkTenant('inv2'); expect(await as(other, () => svc().invoices())).toEqual([]);
+    for (const k of ['SUPPLIER_NAME', 'SUPPLIER_GSTIN', 'SUPPLIER_ADDRESS', 'SUPPLIER_SAC', 'INVOICE_PREFIX']) delete process.env[k];
+  });
+
+  it('upgrades are quoted (prorated) and applied now, downgrades wait for the renewal, and limits stop impossible downgrades', async () => {
+    clock.t = T0; calls.length = 0; whens.length = 0; const T = await mkTenant('prr1'); await addMember(T, 3);
+    await as(T, () => svc().setManual({ plan: 'starter', seats: 4, periodEnd: new Date(T0.getTime() + 15 * DAY) }));
+    await as(T, () => db.repos.subscriptions.updateOne({}, { $set: { provider: 'razorpay', providerSubscriptionId: 'sub_pr1' } }));
+    const q = await as(T, () => svc(fakeProvider).quote({ plan: 'growth', seats: 4 }));
+    expect(q).toMatchObject({ effective: 'now', monthlyInr: 1299 * 4, previousMonthlyInr: 699 * 4, fractionOfPeriodLeft: 0.5, chargeNowInr: Math.round((1299 * 4 - 699 * 4) * 0.5) });
+    const up: any = await as(T, () => svc(fakeProvider).changePlan({ plan: 'growth', seats: 4 }));
+    expect(calls.at(-1)).toEqual(['plan', 'sub_pr1', 'growth', 4, 'now']); expect(up).toMatchObject({ plan: 'growth' }); expect(((await db.models.Tenant.findById(T).lean().exec()) as any).plan).toBe('growth');
+    const down: any = await as(T, () => svc(fakeProvider).changePlan({ plan: 'starter', seats: 4 }));
+    expect(calls.at(-1)).toEqual(['plan', 'sub_pr1', 'starter', 4, 'cycle_end']); expect(down.plan).toBe('growth'); expect(down.quote).toMatchObject({ effective: 'cycle_end', chargeNowInr: 0 }); // still Growth until renewal
+    expect(((await as(T, () => db.repos.subscriptions.findOne({}))) as any).scheduledChange).toMatchObject({ plan: 'starter', seats: 4 });
+    await as(T, () => svc().applyProviderEvent({ provider: 'razorpay', eventId: 'renew', kind: 'charged', providerSubscriptionId: 'sub_pr1', tenantId: T, plan: 'starter', seats: 4, periodEnd: new Date(T0.getTime() + 45 * DAY) }));
+    expect(await as(T, () => svc().entitlements())).toMatchObject({ plan: 'starter' }); expect(((await as(T, () => db.repos.subscriptions.findOne({}))) as any).scheduledChange).toBeNull();
+    await expect(as(T, () => svc(fakeProvider).changePlan({ plan: 'starter', seats: 4 }))).rejects.toMatchObject({ code: 'no_change' });
+    await expect(as(T, () => svc(fakeProvider).changePlan({ plan: 'starter', seats: 2 }))).rejects.toMatchObject({ code: 'invalid_seats', details: { min: 3 } }); // three people are on the team
+    await as(T, async () => { for (let i = 0; i < 4; i++) await db.repos.connections.create({ provider: 'website-webhook', category: 'lead_source', name: `c${i}`, publicId: `p${i}-${T}`, status: 'verified' }); });
+    await expect(as(T, () => svc(fakeProvider).changePlan({ plan: 'starter', seats: 4 }))).rejects.toMatchObject({ code: 'no_change' });
+    await as(T, () => svc().setManual({ plan: 'growth', seats: 4 }));
+    await expect(as(T, () => svc(fakeProvider).changePlan({ plan: 'starter', seats: 4 }))).rejects.toMatchObject({ code: 'plan_limit', details: { feature: 'connections' } }); // Starter includes 3 connections
+    // adding seats is immediate, removing waits
+    whens.length = 0; await as(T, () => db.repos.subscriptions.updateOne({}, { $set: { plan: 'growth', seats: 6, provider: 'razorpay', providerSubscriptionId: 'sub_pr1' } }));
+    await as(T, () => svc(fakeProvider).changeSeats(8)); await as(T, () => svc(fakeProvider).changeSeats(5)); expect(whens).toEqual(['now', 'cycle_end']);
+    clock.t = T0;
+  });
+
+  it('dunning: reminders on the day a payment fails and on days 1, 3, 5 and 7, once each, with the days left', async () => {
+    clock.t = T0; const T = await mkTenant('dun1');
+    await as(T, () => svc().setManual({ plan: 'growth', seats: 3, periodEnd: new Date(T0.getTime() + 20 * DAY) }));
+    await as(T, () => svc().applyProviderEvent({ provider: 'manual', eventId: 'pd', kind: 'past_due' }));
+    const run = async (d: number) => { clock.t = new Date(T0.getTime() + d * DAY + 3600_000); return as(T, () => svc().remind()); };
+    expect(await run(0)).toEqual(['past-due-d0']); expect(await run(0)).toEqual(['past-due-d0']); // asked again the same day: the notification itself is deduplicated
+    expect(await run(2)).toEqual([]); expect(await run(3)).toEqual(['past-due-d3']); expect(await run(4)).toEqual([]); expect(await run(7)).toEqual(['past-due-d7']);
+    const notes: any[] = await as(T, () => db.repos.notifications.find({ kind: 'billing.past_due' }, { sort: { createdAt: 1 } }));
+    expect(notes.map((n) => n.dedupeKey)).toEqual(['billing:past-due-d0', 'billing:past-due-d3', 'billing:past-due-d7']);
+    expect(notes[0].payload.text).toContain('within 7 days'); expect(notes[1].payload.text).toContain('within 4 days'); expect(notes[2].payload.text).toContain('last day');
+    clock.t = T0;
+  });
+
   it('other workspaces are never touched', async () => {
     clock.t = T0; const A = await mkTenant('c4a'); const B = await mkTenant('c4b');
     await as(A, () => svc().setManual({ plan: 'scale', seats: 100 }));
@@ -184,7 +255,10 @@ describe('razorpay provider (documented-shape fixtures; not verified live)', () 
     expect(createRazorpay({ keyId: 'k', keySecret: 's', webhookSecret: '', planIds }).verifyWebhook(raw, { 'x-razorpay-signature': sig })).toBe(false); // no secret configured: nothing verifies
     expect(p.eventId(raw, { 'x-razorpay-event-id': 'evt_1' })).toBe('evt_1'); expect(p.eventId(raw, {})).toMatch(/^[0-9a-f]{64}$/);
     const e = p.parseEvent({ id: 'evt_1', event: 'subscription.charged', payload: { subscription: { entity: { id: 'sub_1', plan_id: 'plan_G', quantity: 7, current_end: 1_800_000_000, notes: { tenant_id: 'tt' } } } } });
-    expect(e).toEqual({ provider: 'razorpay', eventId: 'evt_1', kind: 'charged', providerSubscriptionId: 'sub_1', tenantId: 'tt', plan: 'growth', seats: 7, periodEnd: new Date(1_800_000_000_000) });
+    expect(e).toEqual({ provider: 'razorpay', eventId: 'evt_1', kind: 'charged', providerSubscriptionId: 'sub_1', tenantId: 'tt', plan: 'growth', seats: 7, periodEnd: new Date(1_800_000_000_000), payment: undefined });
+    const paid = p.parseEvent({ id: 'evt_2', event: 'subscription.charged', payload: { subscription: { entity: { id: 'sub_1', plan_id: 'plan_G', quantity: 7, notes: { tenant_id: 'tt' } } }, payment: { entity: { id: 'pay_77', amount: 649800, currency: 'INR', created_at: 1_790_000_000 } } } });
+    expect(paid!.payment).toEqual({ paymentId: 'pay_77', amountPaise: 649800, currency: 'INR', paidAt: new Date(1_790_000_000_000) });
+    expect(p.parseEvent({ id: 'evt_3', event: 'subscription.activated', payload: { subscription: { entity: { id: 'sub_1' } }, payment: { entity: { id: 'pay_78', amount: 100 } } } })!.payment).toBeUndefined(); // only a charge carries a payment
     expect(p.parseEvent({ event: 'subscription.halted', payload: { subscription: { entity: { id: 's' } } } })!.kind).toBe('past_due');
     expect(p.parseEvent({ event: 'payment.failed', payload: { payment: { entity: { subscription_id: 'sub_9' } } } })).toMatchObject({ kind: 'past_due', providerSubscriptionId: 'sub_9' });
     expect(p.parseEvent({ event: 'order.paid' })).toBeNull();

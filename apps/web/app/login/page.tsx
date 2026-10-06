@@ -1,9 +1,11 @@
 'use client';
 import { useState } from 'react';
+import { useHydrated } from '../../lib/hydrated';
 import { useRouter } from 'next/navigation';
 import { ApiError, login } from '../../lib/api';
 
 export default function Login() {
+  const hydrated = useHydrated();
   const router = useRouter();
   const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
   const [totp, setTotp] = useState(''); const [needTotp, setNeedTotp] = useState(false);
@@ -30,7 +32,7 @@ export default function Login() {
         <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         {needTotp && (<><label htmlFor="totp">Authenticator code (or a recovery code)</label><input id="totp" inputMode="numeric" autoComplete="one-time-code" autoFocus required value={totp} onChange={(e) => setTotp(e.target.value)} /></>)}
         {error && <p className="err" role="alert">{error}</p>}
-        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
+        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy || !hydrated}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
       </form>
       <p className="reason" style={{ textAlign: 'center' }}><a href="/forgot">Forgot your password?</a> · <a href="/signup">Create a workspace</a></p>
     </main>

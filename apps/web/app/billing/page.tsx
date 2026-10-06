@@ -2,10 +2,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ApiError, api, refresh } from '../../lib/api';
+import { GST_STATES } from '../../lib/states';
 
 interface PlanCard { key: string; name: string; pricePerSeatInr: number; blurb: string; limits: { maxSeats: number; connections: number; ai: boolean; cloudTelephony: boolean; leadsPerMonth: number | null } }
 interface Overview { status: string; plan: string; planName: string; seats: number; restricted: boolean; reason: string | null; trialDaysLeft: number | null; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean; paymentsEnabled: boolean; pending: { plan: string; seats: number; url: string } | null; plans: PlanCard[] }
 interface Usage { seats: { used: number; members: number; pendingInvites: number; limit: number }; leads: { created: number; softLimit: number | null; nearLimit: boolean; overLimit: boolean }; messagesSent: number; aiRequests: number; connections: { used: number; limit: number } }
+interface Profile { legalName: string; gstin?: string; addressLine: string; city: string; stateCode: string; postalCode: string; email: string }
+interface InvoiceRow { _id: string; number: string; kind: string; issuedAt: string; grossPaise: number; planName: string }
+interface Quote { plan: string; seats: number; monthlyInr: number; effective: 'now' | 'cycle_end'; chargeNowInr: number; note: string }
 const inr = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 const date = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '–');
 
@@ -13,9 +17,10 @@ const date = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString(und
 export default function Billing() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [role, setRole] = useState('agent'); const [o, setO] = useState<Overview | null>(null); const [u, setU] = useState<Usage | null>(null);
+  const [profile, setProfile] = useState<Profile>({ legalName: '', gstin: '', addressLine: '', city: '', stateCode: '', postalCode: '', email: '' }); const [invoices, setInvoices] = useState<InvoiceRow[]>([]); const [quote, setQuote] = useState<Quote | null>(null); const [newPlan, setNewPlan] = useState('');
   const [seats, setSeats] = useState<Record<string, number>>({}); const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [forbidden, setForbidden] = useState(false);
   const load = useCallback(async () => {
-    try { const ov = await api<Overview>('/v1/billing'); setO(ov); setU(await api<Usage>('/v1/billing/usage')); setSeats((s) => ({ ...Object.fromEntries(ov.plans.map((p) => [p.key, Math.max(1, ov.seats)])), ...s })); }
+    try { const ov = await api<Overview>('/v1/billing'); setO(ov); api<Profile | null>('/v1/billing/profile').then((p) => { if (p) setProfile({ ...p, gstin: p.gstin ?? '' }); }).catch(() => undefined); api<InvoiceRow[]>('/v1/billing/invoices').then(setInvoices).catch(() => undefined); setU(await api<Usage>('/v1/billing/usage')); setSeats((s) => ({ ...Object.fromEntries(ov.plans.map((p) => [p.key, Math.max(1, ov.seats)])), ...s })); }
     catch (e) { if (e instanceof ApiError && e.status === 403) setForbidden(true); else if (e instanceof ApiError && e.status === 401) router.replace('/login'); }
   }, [router]);
   useEffect(() => { (async () => { if (!(await refresh())) { router.replace('/login'); return; } setRole((await api<{ role: string }>('/v1/me')).role); setReady(true); await load(); })(); }, [router, load]);
@@ -55,6 +60,16 @@ export default function Billing() {
           ))}
         </section>
       )}
+      {o.status === 'active' && owner && (<section className="card" data-testid="change-plan"><h2>Change plan</h2>
+        <div className="row"><select aria-label="New plan" value={newPlan} onChange={(e) => { setNewPlan(e.target.value); setQuote(null); }} style={{ flex: 1 }}><option value="">Choose a plan…</option>{o.plans.filter((p) => p.key !== o.plan).map((p) => <option key={p.key} value={p.key}>{p.name} · {inr(p.pricePerSeatInr)} / seat</option>)}</select>
+          <button disabled={!newPlan || busy} onClick={() => act(async () => { setQuote(await api<Quote>(`/v1/billing/quote?plan=${newPlan}`)); })}>See the cost</button></div>
+        {quote && (<div data-testid="quote"><p className="reason">{quote.effective === 'now' ? `Switching now: about ${inr(quote.chargeNowInr)} today (prorated), then ${inr(quote.monthlyInr)} a month.` : `Takes effect at your next renewal, then ${inr(quote.monthlyInr)} a month.`} {quote.note}</p>
+          <div className="row"><button className="primary" disabled={busy} onClick={() => act(async () => { await api('/v1/billing/plan', { method: 'POST', body: { plan: quote.plan } }); setQuote(null); setNewPlan(''); setMsg(quote.effective === 'now' ? 'Plan changed.' : 'Scheduled for your next renewal.'); })}>{quote.effective === 'now' ? 'Switch now' : 'Schedule the change'}</button></div></div>)}</section>)}
+      {owner && (<section className="card" data-testid="billing-profile"><h2>Billing details (for GST invoices)</h2>
+        {(['legalName', 'addressLine', 'city', 'postalCode', 'email', 'gstin'] as const).map((k) => (<div key={k}><label htmlFor={`bp-${k}`}>{({ legalName: 'Legal / business name', addressLine: 'Address', city: 'City', postalCode: 'PIN code', email: 'Billing email', gstin: 'GSTIN (optional)' } as const)[k]}</label><input id={`bp-${k}`} value={profile[k] ?? ''} onChange={(e) => setProfile({ ...profile, [k]: e.target.value })} /></div>))}
+        <label htmlFor="bp-state">State</label><select id="bp-state" value={profile.stateCode} onChange={(e) => setProfile({ ...profile, stateCode: e.target.value })}><option value="">Choose…</option>{GST_STATES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}</select>
+        <div className="row" style={{ marginTop: 12 }}><button className="primary" disabled={busy} onClick={() => act(async () => { await api('/v1/billing/profile', { method: 'PUT', body: { ...profile, gstin: profile.gstin || undefined } }); setMsg('Billing details saved. New invoices will use them.'); })}>Save billing details</button></div></section>)}
+      {invoices.length > 0 && (<section className="card" data-testid="invoices"><h2>Invoices</h2><ul className="list">{invoices.map((i) => (<li key={i._id}><span><b>{i.number}</b> · {i.planName}<br /><span className="reason">{date(i.issuedAt)} · {i.kind === 'tax_invoice' ? 'GST invoice' : 'Receipt'}</span></span><span>{inr(i.grossPaise / 100)} <a href={`/billing/invoice/${i._id}`}>View</a></span></li>))}</ul></section>)}
       <p className="reason">Messaging and calling are billed by your own providers (WhatsApp, MSG91, Exotel…), not by LeadDesk. Prices are per seat per month, excluding GST.</p>
     </main>
   );

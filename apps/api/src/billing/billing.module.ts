@@ -1,9 +1,9 @@
-import { Body, CanActivate, Controller, ExecutionContext, Get, Global, Inject, Injectable, Module, Post, SetMetadata } from '@nestjs/common';
+import { Body, CanActivate, Controller, ExecutionContext, Get, Global, Inject, Injectable, Module, Param, Post, Put, Query, SetMetadata } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { IsIn, IsInt, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { BillingService, DomainError, paymentProviderFromEnv, publicPlans, type Entitlements, type PaymentProvider } from '@leaddesk/domain';
-import { TENANT_DB } from '@leaddesk/platform';
-import { runWithTenant, type TenantDb } from '@leaddesk/db';
+import { SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
+import { runWithTenant, type SystemOps, type TenantDb } from '@leaddesk/db';
 import type { FetchLike } from '@leaddesk/connectors-core';
 import type { AuthUser } from '../common/auth.types';
 import { CurrentUser, Public, RequirePermission } from '../common/guards';
@@ -46,12 +46,22 @@ export class SubscriptionGuard implements CanActivate {
 }
 
 class CheckoutDto { @IsIn(['starter', 'growth', 'scale']) plan!: string; @IsInt() @Min(1) @Max(500) seats!: number }
+class PlanChangeDto { @IsIn(['starter', 'growth', 'scale']) plan!: string; @IsOptional() @IsInt() @Min(1) @Max(500) seats?: number }
+class ProfileDto {
+  @IsOptional() @IsString() @MaxLength(120) legalName?: string;
+  @IsOptional() @IsString() @MaxLength(20) gstin?: string;
+  @IsOptional() @IsString() @MaxLength(200) addressLine?: string;
+  @IsOptional() @IsString() @MaxLength(80) city?: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,2}$/) stateCode?: string;
+  @IsOptional() @IsString() @MaxLength(10) postalCode?: string;
+  @IsOptional() @IsString() @MaxLength(120) email?: string;
+}
 class SeatsDto { @IsInt() @Min(1) @Max(500) seats!: number }
 
 @Injectable()
 export class BillingFacade {
-  constructor(@Inject(TENANT_DB) readonly db: TenantDb, @Inject(PAYMENT_PROVIDER) readonly provider: PaymentProvider | undefined, readonly cache: EntitlementCache) {}
-  svc() { return new BillingService(this.db, undefined, this.provider); }
+  constructor(@Inject(TENANT_DB) readonly db: TenantDb, @Inject(SYSTEM_OPS) readonly sys: SystemOps, @Inject(PAYMENT_PROVIDER) readonly provider: PaymentProvider | undefined, readonly cache: EntitlementCache) {}
+  svc() { return new BillingService(this.db, undefined, this.provider, undefined, this.sys); }
 }
 
 @Controller('v1')
@@ -66,7 +76,11 @@ export class BillingController {
   constructor(private readonly f: BillingFacade) {}
   /** Everyone signed in: drives the trial / read-only banner. Nothing sensitive. */
   @Get('status')
-  async status() { const e = await this.f.svc().entitlements(); return { status: e.status, plan: e.plan, planName: e.planName, trialDaysLeft: e.trialDaysLeft, restricted: e.restricted, reason: e.reason, cancelAtPeriodEnd: e.cancelAtPeriodEnd, currentPeriodEnd: e.currentPeriodEnd }; }
+  async status(@CurrentUser() u: AuthUser) {
+    // the same (briefly cached) view the write guard uses, so a banner never appears before writes are actually refused
+    const e = await this.f.cache.get(u.tenantId);
+    return { status: e.status, plan: e.plan, planName: e.planName, trialDaysLeft: e.trialDaysLeft, restricted: e.restricted, reason: e.reason, cancelAtPeriodEnd: e.cancelAtPeriodEnd, currentPeriodEnd: e.currentPeriodEnd };
+  }
   @Get() @RequirePermission('tenant.manage')
   overview() { return this.f.svc().overview(); }
   @Get('usage') @RequirePermission('tenant.manage')
@@ -77,6 +91,18 @@ export class BillingController {
     const email = ((await this.f.db.models.User.findById(u.userId, { email: 1 }).lean().exec()) as any)?.email ?? '';
     const r = await this.f.svc().checkout({ plan: b.plan, seats: b.seats, email }); this.f.cache.invalidate(u.tenantId); return r;
   }
+  @Get('profile') @RequirePermission('tenant.manage')
+  profile() { return this.f.svc().profile(); }
+  @Put('profile') @RequirePermission('billing.manage')
+  setProfile(@Body() b: ProfileDto) { return this.f.svc().setProfile(b); }
+  @Get('invoices') @RequirePermission('tenant.manage')
+  invoices() { return this.f.svc().invoices(); }
+  @Get('invoices/:id') @RequirePermission('tenant.manage')
+  invoice(@Param('id') id: string) { return this.f.svc().invoice(id); }
+  @Get('quote') @RequirePermission('billing.manage')
+  quote(@Query('plan') plan?: string, @Query('seats') seats?: string) { return this.f.svc().quote({ plan, seats: seats ? Number(seats) : undefined }); }
+  @Post('plan') @RequirePermission('billing.manage')
+  async plan(@CurrentUser() u: AuthUser, @Body() b: PlanChangeDto) { const r = await this.f.svc().changePlan(b); this.f.cache.invalidate(u.tenantId); return r; }
   @Post('seats') @RequirePermission('billing.manage')
   async seats(@CurrentUser() u: AuthUser, @Body() b: SeatsDto) { const r = await this.f.svc().changeSeats(b.seats); this.f.cache.invalidate(u.tenantId); return r; }
   @Post('cancel') @RequirePermission('billing.manage')

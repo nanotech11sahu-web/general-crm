@@ -7,12 +7,16 @@ export interface ProviderEvent {
   provider: string; eventId: string;
   kind: 'activated' | 'charged' | 'past_due' | 'cancelled' | 'completed' | 'updated' | 'resumed' | 'other';
   providerSubscriptionId?: string; tenantId?: string; plan?: PlanKey; seats?: number; periodEnd?: Date;
+  /** Present on a successful charge: what was actually paid (integer paise, GST-inclusive). */
+  payment?: { paymentId: string; amountPaise: number; currency: string; paidAt: Date };
 }
 export interface PaymentProvider {
   id: string;
   createSubscription(i: { plan: PlanKey; seats: number; tenantId: string; email: string }): Promise<{ providerSubscriptionId: string; url: string }>;
   cancel(providerSubscriptionId: string, atCycleEnd: boolean): Promise<void>;
-  updateSeats(providerSubscriptionId: string, seats: number): Promise<void>;
+  /** `now`: the provider bills the difference immediately (prorated); `cycle_end`: new quantity from the next renewal. */
+  updateSeats(providerSubscriptionId: string, seats: number, when?: 'now' | 'cycle_end'): Promise<void>;
+  changePlan(providerSubscriptionId: string, plan: PlanKey, seats: number, when: 'now' | 'cycle_end'): Promise<void>;
   verifyWebhook(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): boolean;
   eventId(rawBody: Buffer, headers: Record<string, string | string[] | undefined>): string;
   parseEvent(payload: any): ProviderEvent | null;
@@ -43,7 +47,11 @@ export function createRazorpay(env: RazorpayEnv): PaymentProvider {
       return { providerSubscriptionId: r.id, url: r.short_url };
     },
     async cancel(id, atCycleEnd) { await call(`/subscriptions/${encodeURIComponent(id)}/cancel`, 'POST', { cancel_at_cycle_end: atCycleEnd ? 1 : 0 }); },
-    async updateSeats(id, seats) { await call(`/subscriptions/${encodeURIComponent(id)}`, 'PATCH', { quantity: seats, schedule_change_at: 'cycle_end' }); },
+    async updateSeats(id, seats, when = 'cycle_end') { await call(`/subscriptions/${encodeURIComponent(id)}`, 'PATCH', { quantity: seats, schedule_change_at: when }); },
+    async changePlan(id, plan, seats, when) {
+      const planId = env.planIds[plan]; if (!planId) throw new Error(`No Razorpay plan id configured for ${plan}`);
+      await call(`/subscriptions/${encodeURIComponent(id)}`, 'PATCH', { plan_id: planId, quantity: seats, schedule_change_at: when });
+    },
     verifyWebhook(raw, headers) {
       const given = hdr(headers, 'x-razorpay-signature'); if (!given || !env.webhookSecret) return false;
       const want = Buffer.from(createHmac('sha256', env.webhookSecret).update(raw).digest('hex')), got = Buffer.from(given);
@@ -54,8 +62,10 @@ export function createRazorpay(env: RazorpayEnv): PaymentProvider {
       const type = String(p?.event ?? ''); const sub = p?.payload?.subscription?.entity; if (!type.startsWith('subscription.') && type !== 'payment.failed') return null;
       const kinds: Record<string, ProviderEvent['kind']> = { 'subscription.activated': 'activated', 'subscription.charged': 'charged', 'subscription.resumed': 'resumed', 'subscription.pending': 'past_due', 'subscription.halted': 'past_due', 'subscription.cancelled': 'cancelled', 'subscription.completed': 'completed', 'subscription.updated': 'updated', 'payment.failed': 'past_due' };
       const subId = sub?.id ?? p?.payload?.payment?.entity?.subscription_id ?? p?.payload?.payment?.entity?.notes?.subscription_id;
+      const pay = p?.payload?.payment?.entity;
+      const payment = type === 'subscription.charged' && pay?.id && Number.isInteger(pay.amount) ? { paymentId: String(pay.id), amountPaise: pay.amount as number, currency: String(pay.currency ?? 'INR'), paidAt: new Date(Number(pay.created_at ?? Date.now() / 1000) * 1000) } : undefined;
       return {
-        provider: 'razorpay', eventId: String(p?.id ?? ''), kind: kinds[type] ?? 'other', providerSubscriptionId: subId, tenantId: sub?.notes?.tenant_id ?? p?.payload?.payment?.entity?.notes?.tenant_id,
+        payment, provider: 'razorpay', eventId: String(p?.id ?? ''), kind: kinds[type] ?? 'other', providerSubscriptionId: subId, tenantId: sub?.notes?.tenant_id ?? p?.payload?.payment?.entity?.notes?.tenant_id,
         plan: sub?.plan_id ? planByRzp.get(sub.plan_id) : undefined, seats: typeof sub?.quantity === 'number' ? sub.quantity : undefined, periodEnd: sub?.current_end ? new Date(Number(sub.current_end) * 1000) : undefined,
       };
     },

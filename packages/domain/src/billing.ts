@@ -3,6 +3,7 @@ import { DomainError } from './errors';
 import { DbNotifier } from './integrity';
 import { loadPlans, PAST_DUE_GRACE_DAYS, TRIAL_DAYS, type Plan, type PlanKey } from './plans';
 import type { PaymentProvider, ProviderEvent } from './payments';
+import { amountInWords, financialYear, formatInvoiceNumber, GST_STATE_CODES, splitGst, validateGstin } from './gst';
 
 const DAY = 86_400_000;
 export type SubStatus = 'trialing' | 'active' | 'past_due' | 'canceled' | 'expired';
@@ -12,10 +13,19 @@ export interface Entitlements {
   reason: string | null; limits: Plan['limits']; trialEndsAt: Date | null; trialDaysLeft: number | null; currentPeriodEnd: Date | null; cancelAtPeriodEnd: boolean;
 }
 
+export interface BillingProfile { legalName: string; gstin?: string; addressLine: string; city: string; state: string; stateCode: string; postalCode: string; email: string }
+export interface Supplier { name: string; gstin: string; address: string; stateCode: string; sac: string; invoicePrefix: string; gstRatePct: number }
+/** The legal entity that sells LeadDesk. Without these, payments produce a plain receipt instead of a GST tax invoice. */
+export function supplierFromEnv(env: NodeJS.ProcessEnv = process.env): Supplier | null {
+  if (!env.SUPPLIER_NAME || !env.SUPPLIER_GSTIN || !env.SUPPLIER_ADDRESS) return null;
+  const g = validateGstin(env.SUPPLIER_GSTIN); if (!g.ok) return null;
+  return { name: env.SUPPLIER_NAME, gstin: env.SUPPLIER_GSTIN.trim().toUpperCase(), address: env.SUPPLIER_ADDRESS, stateCode: g.stateCode, sac: env.SUPPLIER_SAC ?? '', invoicePrefix: (env.INVOICE_PREFIX ?? 'LD').replace(/[^A-Z0-9-]/gi, '').slice(0, 8) || 'LD', gstRatePct: Number(env.GST_RATE ?? 18) };
+}
+
 /** Subscription state, entitlements and plan enforcement for the current workspace. */
 export class BillingService {
   private readonly plans: Record<PlanKey, Plan>;
-  constructor(private readonly db: TenantDb, private readonly now: () => Date = () => new Date(), private readonly provider?: PaymentProvider, plans = loadPlans()) { this.plans = plans; }
+  constructor(private readonly db: TenantDb, private readonly now: () => Date = () => new Date(), private readonly provider?: PaymentProvider, plans = loadPlans(), private readonly sys?: SystemOps) { this.plans = plans; }
   private get r() { return this.db.repos; }
 
   /** Every workspace has exactly one subscription; legacy workspaces (created before billing) start a fresh trial on first read. */
@@ -92,13 +102,90 @@ export class BillingService {
     await this.r.audit.record({ action: 'billing.checkout_started', entity: 'subscription', meta: { plan: plan.key, seats: i.seats } });
     return { url: c.url };
   }
+
+  // ---------- billing profile + invoices ----------
+  async profile(): Promise<BillingProfile | null> { const t: any = await this.db.models.Tenant.findById(requireTenantId()).lean().exec(); return t?.billingProfile ?? null; }
+  async setProfile(p: Partial<BillingProfile>): Promise<BillingProfile> {
+    const errors: Record<string, string> = {}; const cur = (await this.profile()) ?? ({} as Partial<BillingProfile>); const m = { ...cur, ...p } as BillingProfile;
+    const need = (k: keyof BillingProfile, label: string, max = 200) => { const v = String(m[k] ?? '').trim(); if (!v) errors[k] = `${label} is required`; else if (v.length > max) errors[k] = `${label} is too long`; };
+    need('legalName', 'Legal name', 120); need('addressLine', 'Address', 200); need('city', 'City', 80); need('postalCode', 'PIN code', 10); need('email', 'Billing email', 120);
+    if (m.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m.email)) errors.email = 'Enter a valid email';
+    if (m.postalCode && !/^\d{6}$/.test(String(m.postalCode).trim())) errors.postalCode = 'A PIN code has 6 digits';
+    let stateCode = String(m.stateCode ?? '').padStart(2, '0');
+    if (m.gstin) {
+      const g = validateGstin(m.gstin);
+      if (!g.ok) errors.gstin = g.reason; else { if (stateCode && stateCode !== '00' && stateCode !== g.stateCode) errors.stateCode = `The GSTIN is registered in ${GST_STATE_CODES[g.stateCode]}; choose the same state`; stateCode = g.stateCode; m.gstin = m.gstin.trim().toUpperCase(); }
+    }
+    if (!GST_STATE_CODES[stateCode]) errors.stateCode = 'Choose a state';
+    if (Object.keys(errors).length) throw new DomainError('invalid_billing_profile', 'Some billing details need attention', errors);
+    const clean: BillingProfile = { legalName: m.legalName.trim(), gstin: m.gstin || undefined, addressLine: m.addressLine.trim(), city: m.city.trim(), state: GST_STATE_CODES[stateCode], stateCode, postalCode: String(m.postalCode).trim(), email: m.email.trim() };
+    await this.db.models.Tenant.updateOne({ _id: requireTenantId() }, { $set: { billingProfile: clean } });
+    await this.r.audit.record({ action: 'billing.profile_updated', entity: 'tenant', meta: { gstin: !!clean.gstin } });
+    return clean;
+  }
+
+  /** Issues the invoice for one provider payment, once (unique payment id). Without supplier details it records a receipt, honestly labelled. */
+  async issueInvoice(pay: NonNullable<ProviderEvent['payment']>, ctx: { plan: PlanKey; seats: number; periodEnd?: Date }) {
+    const existing = await this.r.invoices.findOne({ paymentId: pay.paymentId }); if (existing) return existing;
+    if (pay.currency !== 'INR') return null; // GST invoices are INR only; other currencies are not sold
+    const supplier = supplierFromEnv(); const prof = await this.profile(); const now = this.now();
+    const fy = financialYear(pay.paidAt ?? now);
+    const base: Record<string, unknown> = { paymentId: pay.paymentId, issuedAt: pay.paidAt ?? now, plan: ctx.plan, planName: this.plans[ctx.plan]?.name ?? ctx.plan, seats: ctx.seats, periodEnd: ctx.periodEnd, currency: 'INR', fy, grossPaise: pay.amountPaise,
+      customer: prof ?? { legalName: ((await this.db.models.Tenant.findById(requireTenantId(), { name: 1 }).lean().exec()) as any)?.name ?? 'Customer' } };
+    let doc: Record<string, unknown>;
+    if (supplier && this.sys) {
+      const pos = prof?.stateCode ?? supplier.stateCode; const g = splitGst(pay.amountPaise, supplier.gstRatePct, supplier.stateCode, pos);
+      const seq = await this.sys.nextInvoiceSeq(fy);
+      doc = { ...base, kind: 'tax_invoice', number: formatInvoiceNumber(supplier.invoicePrefix, fy, seq), taxablePaise: g.taxablePaise, ratePct: g.ratePct, cgstPaise: g.cgstPaise, sgstPaise: g.sgstPaise, igstPaise: g.igstPaise, intraState: g.intraState, placeOfSupply: pos, supplier };
+    } else {
+      doc = { ...base, kind: 'receipt', number: `RCPT-${pay.paymentId.slice(-10).toUpperCase()}` };
+    }
+    try { return await this.r.invoices.create(doc); } catch (e: any) { if (e?.code === 11000) return this.r.invoices.findOne({ paymentId: pay.paymentId }); throw e; }
+  }
+  async invoices() { return this.r.invoices.find({}, { sort: { issuedAt: -1 }, limit: 200 }); }
+  async invoice(id: string) {
+    const inv: any = await this.r.invoices.findById(id); if (!inv) throw new DomainError('not_found', 'Invoice not found', undefined, 404);
+    return { ...inv.toObject?.() ?? inv, amountInWords: amountInWords(inv.grossPaise), supplierStateName: inv.supplier ? GST_STATE_CODES[inv.supplier.stateCode] : null, placeOfSupplyName: inv.placeOfSupply ? GST_STATE_CODES[inv.placeOfSupply] : null };
+  }
+
+  // ---------- plan / seat changes with proration quote ----------
+  /**
+   * What changing to `plan` x `seats` would cost *today*. Prices are per seat per month and GST-inclusive as charged by the provider;
+   * the provider computes the real prorated amount, this is the estimate shown before the customer confirms.
+   */
+  async quote(i: { plan?: string; seats?: number }) {
+    const sub: any = await this.ensureTrial(); const e = BillingService.effective(sub, this.plans, this.now());
+    if (e.status !== 'active' || e.plan === 'trial') throw new DomainError('not_subscribed', 'Quotes are for paid plans', undefined, 409);
+    const next = i.plan ? this.planOf(i.plan) : this.plans[e.plan]; const seats = i.seats ?? e.seats;
+    const oldMonthly = this.plans[e.plan].pricePerSeatInr * e.seats, newMonthly = next.pricePerSeatInr * seats; const delta = newMonthly - oldMonthly;
+    const end = e.currentPeriodEnd; const left = end ? Math.max(0, Math.min(1, (end.getTime() - this.now().getTime()) / (30 * DAY))) : 1;
+    const upgrade = delta > 0;
+    return { plan: next.key, seats, monthlyInr: newMonthly, previousMonthlyInr: oldMonthly, effective: upgrade ? 'now' as const : 'cycle_end' as const, chargeNowInr: upgrade ? Math.round(delta * left) : 0, fractionOfPeriodLeft: Math.round(left * 100) / 100, note: upgrade ? 'Estimate. Your provider charges the exact prorated difference now, then the new amount each month.' : 'A reduction takes effect at your next renewal; nothing is refunded for the current period.' };
+  }
+  async changePlan(i: { plan: string; seats?: number }) {
+    const sub: any = await this.ensureTrial(); const e = BillingService.effective(sub, this.plans, this.now());
+    if (e.status !== 'active' || e.plan === 'trial') throw new DomainError('not_subscribed', 'Choose a plan first', undefined, 409);
+    const next = this.planOf(i.plan); const seats = i.seats ?? e.seats; const used = (await this.seatsUsed()).used;
+    if (next.key === e.plan && seats === e.seats) throw new DomainError('no_change', 'That is already your plan', undefined, 409);
+    if (!Number.isInteger(seats) || seats < Math.max(1, used) || seats > next.limits.maxSeats) throw new DomainError('invalid_seats', `${next.name} allows ${Math.max(1, used)} to ${next.limits.maxSeats} seats with your current team`, { min: Math.max(1, used), max: next.limits.maxSeats });
+    const conns = await this.r.connections.count({ status: { $ne: 'revoked' } });
+    if (conns > next.limits.connections) throw new DomainError('plan_limit', `${next.name} includes ${next.limits.connections} connections and you have ${conns}. Remove some first.`, { feature: 'connections' }, 409);
+    const q = await this.quote({ plan: next.key, seats });
+    if (sub.provider === 'razorpay') { if (!this.provider) throw new DomainError('payments_unavailable', 'Online payments are not configured', undefined, 409); await this.provider.changePlan(sub.providerSubscriptionId, next.key, seats, q.effective); }
+    if (q.effective === 'now') await this.r.subscriptions.updateOne({ _id: sub._id }, { $set: { plan: next.key, seats, scheduledChange: null } });
+    else await this.r.subscriptions.updateOne({ _id: sub._id }, { $set: { scheduledChange: { plan: next.key, seats, at: e.currentPeriodEnd } } });
+    await this.db.models.Tenant.updateOne({ _id: requireTenantId() }, { $set: { plan: q.effective === 'now' ? next.key : sub.plan } });
+    await this.r.audit.record({ action: 'billing.plan_changed', entity: 'subscription', meta: { from: e.plan, to: next.key, seats, effective: q.effective } });
+    return { ...(await this.overview()), quote: q };
+  }
+
   async changeSeats(seats: number) {
     const sub: any = await this.ensureTrial(); const e = BillingService.effective(sub, this.plans, this.now());
     if (e.status !== 'active' || e.plan === 'trial') throw new DomainError('not_subscribed', 'Seats can be changed once you have a paid plan', undefined, 409);
     const used = (await this.seatsUsed()).used; const max = this.plans[e.plan].limits.maxSeats;
     if (!Number.isInteger(seats) || seats < Math.max(1, used) || seats > max) throw new DomainError('invalid_seats', `Seats must be between ${Math.max(1, used)} and ${max}`, { min: Math.max(1, used), max });
-    if (sub.provider === 'razorpay') { if (!this.provider) throw new DomainError('payments_unavailable', 'Online payments are not configured', undefined, 409); await this.provider.updateSeats(sub.providerSubscriptionId, seats); }
-    await this.r.subscriptions.updateOne({ _id: sub._id }, { $set: { seats } }); // takes effect now; the provider bills the new quantity from the next cycle
+    if (sub.provider === 'razorpay') { if (!this.provider) throw new DomainError('payments_unavailable', 'Online payments are not configured', undefined, 409); await this.provider.updateSeats(sub.providerSubscriptionId, seats, seats > sub.seats ? 'now' : 'cycle_end'); }
+    await this.r.subscriptions.updateOne({ _id: sub._id }, { $set: { seats } }); // more seats are usable at once (the provider bills the prorated difference now); fewer are billed from the next cycle
     await this.r.audit.record({ action: 'billing.seats_changed', entity: 'subscription', meta: { from: sub.seats, to: seats } });
     return this.overview();
   }
@@ -122,6 +209,7 @@ export class BillingService {
         Object.assign(set, { status: 'active', pastDueSince: null, cancelAtPeriodEnd: false, provider: e.provider, providerSubscriptionId: e.providerSubscriptionId, pending: null });
         if (planKey && this.plans[planKey]?.purchasable) set.plan = planKey;
         if (e.seats) set.seats = e.seats; if (e.periodEnd) set.currentPeriodEnd = e.periodEnd;
+        if (e.kind === 'charged') set.scheduledChange = null;
         break;
       case 'past_due': Object.assign(set, { status: 'past_due', pastDueSince: sub.pastDueSince ?? this.now() }); break;
       case 'cancelled': Object.assign(set, { status: 'canceled', cancelAtPeriodEnd: true }); if (e.periodEnd) set.currentPeriodEnd = e.periodEnd; break;
@@ -131,6 +219,7 @@ export class BillingService {
     }
     await this.r.subscriptions.updateOne({ _id: sub._id }, { $set: set });
     await this.db.models.Tenant.updateOne({ _id: requireTenantId() }, { $set: { plan: (set.plan as string) ?? sub.plan } });
+    if (e.kind === 'charged' && e.payment) await this.issueInvoice(e.payment, { plan: ((set.plan as PlanKey) ?? sub.plan) as PlanKey, seats: (set.seats as number) ?? sub.seats, periodEnd: (set.currentPeriodEnd as Date | undefined) });
     await this.r.audit.record({ action: `billing.${e.kind}`, entity: 'subscription', meta: { provider: e.provider, plan: set.plan ?? sub.plan, seats: set.seats ?? sub.seats } });
     return 'applied';
   }
@@ -158,7 +247,12 @@ export class BillingService {
     const say = async (key: string, kind: string, text: string) => { await n.notify({ kind: `billing.${kind}`, audience: 'admins', payload: { text, status: e.status, daysLeft: e.trialDaysLeft }, dedupeKey: `billing:${key}` }); sent.push(key); };
     if (e.status === 'trialing' && e.trialDaysLeft !== null && e.trialDaysLeft <= 3) await say(`trial-${e.trialDaysLeft <= 1 ? '1d' : '3d'}`, 'trial_ending', e.trialDaysLeft <= 1 ? 'Your free trial ends within a day. Choose a plan to keep working.' : `Your free trial ends in ${e.trialDaysLeft} days. Choose a plan to keep working.`);
     if (e.status === 'expired') await say(`expired-${(e.trialEndsAt ?? e.currentPeriodEnd)?.toISOString().slice(0, 10) ?? 'x'}`, 'expired', e.reason ?? 'Your workspace is read-only until a plan is active.');
-    if (e.status === 'past_due') await say(`past-due-${new Date(this.now().getTime()).toISOString().slice(0, 10)}`, 'past_due', 'Your last payment failed. Update your payment method to avoid interruption.');
+    if (e.status === 'past_due') {
+      // dunning: on the day it failed and again on days 1, 3, 5 and 7 (the last day of grace), not every day
+      const sub: any = await this.r.subscriptions.findOne({}); const since = sub?.pastDueSince ? new Date(sub.pastDueSince).getTime() : this.now().getTime();
+      const day = Math.floor((this.now().getTime() - since) / DAY); const left = Math.max(0, PAST_DUE_GRACE_DAYS - day);
+      if ([0, 1, 3, 5, 7].includes(day)) await say(`past-due-d${day}`, 'past_due', left > 0 ? `Your last payment failed. Update your payment method within ${left} day${left === 1 ? '' : 's'} to avoid the workspace becoming read-only.` : 'Your last payment failed and today is the last day before the workspace becomes read-only. Update your payment method now.');
+    }
     return sent;
   }
 
@@ -175,7 +269,7 @@ export class BillingService {
       if (!parsed) { await sys.finishBillingEvent(ev._id, 'ignored'); return true; }
       const tenantId = parsed.tenantId ?? (parsed.providerSubscriptionId ? await sys.tenantByProviderSubscription(parsed.providerSubscriptionId) : null);
       if (!tenantId) { await sys.finishBillingEvent(ev._id, 'ignored', 'no tenant for event'); return true; }
-      const out = await runWithTenant(String(tenantId), () => new BillingService(db, now, provider).applyProviderEvent(parsed));
+      const out = await runWithTenant(String(tenantId), () => new BillingService(db, now, provider, undefined, sys).applyProviderEvent(parsed));
       await sys.finishBillingEvent(ev._id, out === 'applied' ? 'done' : 'ignored', undefined, String(tenantId));
       return true;
     } catch (e: any) { await sys.finishBillingEvent(ev._id, 'failed', String(e?.message ?? e).slice(0, 300)); return false; }

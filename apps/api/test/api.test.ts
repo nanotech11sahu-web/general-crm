@@ -1719,3 +1719,45 @@ describe('qualification assistant API (phase 9)', () => {
     await request(http).put('/v1/ai/settings').set(auth(owner)).send({ features: { autopilot: 1 } }).expect(422); // no AI provider connected yet
   });
 });
+
+describe('billing details, invoices and plan changes API (phase 9)', () => {
+  it('owner saves GST details (validated), a signed charge issues one invoice, admins can read it, agents cannot; plan changes quote and apply', async () => {
+    const { TENANT_DB, SYSTEM_OPS } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db'); const { BillingService } = await import('@leaddesk/domain'); const { EntitlementCache, PAYMENT_PROVIDER } = await import('../src/billing/billing.module');
+    const db: any = app.get(TENANT_DB); const sys: any = app.get(SYSTEM_OPS); const provider: any = app.get(PAYMENT_PROVIDER);
+    Object.assign(process.env, { SUPPLIER_NAME: 'Acme Software Pvt Ltd', SUPPLIER_GSTIN: '27AAPFU0939F1ZV', SUPPLIER_ADDRESS: '1 MG Road, Pune 411001', SUPPLIER_SAC: '998314' });
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'inv-owner@x.io', password: 'correct-horse-9', name: 'Ira', tenantName: 'Invoice Co' }).expect(201);
+    const owner = o.body.accessToken; const tid = o.body.tenantId;
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'inv-admin@x.io', role: 'admin' }).expect(201);
+    const admin = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'inv-admin', password: 'agent-pass-123' }).expect(201)).body.accessToken as string;
+    const inv2 = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'inv-agent@x.io', role: 'agent' }).expect(201);
+    const agent = (await request(http).post(`/v1/invitations/${inv2.body.inviteToken}/accept`).send({ name: 'inv-agent', password: 'agent-pass-123' }).expect(201)).body.accessToken as string;
+    await request(http).put('/v1/billing/profile').set(auth(admin)).send({ legalName: 'X' }).expect(403); // only the owner edits billing details
+    await request(http).put('/v1/billing/profile').set(auth(owner)).send({ legalName: 'Invoice Co Pvt Ltd', addressLine: '9 FC Road', city: 'Pune', postalCode: '411004', email: 'accounts@invoice.co', stateCode: '27', gstin: '27AAPFU0939F1ZX' }).expect(422).expect((r) => expect(r.body.details.gstin).toMatch(/last character/));
+    const prof = (await request(http).put('/v1/billing/profile').set(auth(owner)).send({ legalName: 'Invoice Co Pvt Ltd', addressLine: '9 FC Road', city: 'Pune', postalCode: '411004', email: 'accounts@invoice.co', stateCode: '27', gstin: '27AAPFU0939F1ZV' }).expect(200)).body;
+    expect(prof).toMatchObject({ state: 'Maharashtra', gstin: '27AAPFU0939F1ZV' });
+    expect((await request(http).get('/v1/billing/profile').set(auth(admin)).expect(200)).body.legalName).toBe('Invoice Co Pvt Ltd');
+    await request(http).get('/v1/billing/profile').set(auth(agent)).expect(403);
+    // the provider's signed "charged" event (what the ingress hands to the worker)
+    await runWithTenant(tid, () => db.repos.subscriptions.updateOne({}, { $set: { provider: 'razorpay', providerSubscriptionId: 'sub_invapi' } }));
+    const payload = { id: 'evt_inv_1', event: 'subscription.charged', payload: { subscription: { entity: { id: 'sub_invapi', plan_id: 'plan_G', quantity: 3, current_end: Math.floor(Date.now() / 1000) + 30 * 86400, notes: { tenant_id: tid } } }, payment: { entity: { id: 'pay_apiinv0001', amount: 460_920, currency: 'INR', created_at: Math.floor(Date.now() / 1000) } } } };
+    const { event } = await sys.recordBillingEvent('razorpay', 'evt_inv_1', 'subscription.charged', payload);
+    expect(await BillingService.processEvent(db, sys, provider, event)).toBe(true);
+    expect(await BillingService.processEvent(db, sys, provider, event)).toBe(true); // a replay changes nothing
+    app.get(EntitlementCache).invalidate(tid);
+    const list = (await request(http).get('/v1/billing/invoices').set(auth(admin)).expect(200)).body;
+    expect(list).toHaveLength(1); expect(list[0]).toMatchObject({ kind: 'tax_invoice', grossPaise: 460_920, cgstPaise: 35_155, sgstPaise: 35_155, igstPaise: 0, taxablePaise: 390_610, planName: 'Growth' });
+    const one = (await request(http).get(`/v1/billing/invoices/${list[0]._id}`).set(auth(admin)).expect(200)).body;
+    expect(one).toMatchObject({ number: expect.stringMatching(/^LD\/\d{4}-\d{2}\/\d{6}$/), customer: { legalName: 'Invoice Co Pvt Ltd', gstin: '27AAPFU0939F1ZV' }, supplier: { gstin: '27AAPFU0939F1ZV' }, placeOfSupplyName: 'Maharashtra' });
+    expect(one.amountInWords).toMatch(/^Rupees Four Thousand Six Hundred Nine and Twenty Paise Only$/);
+    await request(http).get('/v1/billing/invoices').set(auth(agent)).expect(403);
+    const other = await signup('inv-nosee'); expect((await request(http).get('/v1/billing/invoices').set(auth(other.token)).expect(200)).body).toEqual([]);
+    await request(http).get(`/v1/billing/invoices/${list[0]._id}`).set(auth(other.token)).expect(404); // another workspace cannot open it
+    // plan change: quote then apply (upgrade is immediate); the provider fixture accepts the documented PATCH
+    const patches: any[] = []; providerFetch = async (url: string, init?: any) => { const u = new URL(url); if (u.hostname === 'api.razorpay.com' && init?.method === 'PATCH') { patches.push({ path: u.pathname, body: JSON.parse(String(init.body)) }); return { ok: true, status: 200, text: async () => '{}' }; } return { ok: false, status: 404, text: async () => '{}' }; };
+    const q = (await request(http).get('/v1/billing/quote').query({ plan: 'scale' }).set(auth(owner)).expect(200)).body; expect(q).toMatchObject({ effective: 'now', plan: 'scale' });
+    await request(http).get('/v1/billing/quote').query({ plan: 'scale' }).set(auth(admin)).expect(403);
+    await request(http).post('/v1/billing/plan').set(auth(owner)).send({ plan: 'scale' }).expect(201).expect((r) => expect(r.body).toMatchObject({ plan: 'scale', quote: { effective: 'now' } }));
+    expect(patches).toEqual([{ path: '/v1/subscriptions/sub_invapi', body: { plan_id: 'plan_X', quantity: 3, schedule_change_at: 'now' } }]);
+    for (const k of ['SUPPLIER_NAME', 'SUPPLIER_GSTIN', 'SUPPLIER_ADDRESS', 'SUPPLIER_SAC']) delete process.env[k];
+  });
+});

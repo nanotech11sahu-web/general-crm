@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import { useHydrated } from '../../lib/hydrated';
 import { useRouter } from 'next/navigation';
 import { ApiError, api, setToken } from '../../lib/api';
 
@@ -7,6 +8,7 @@ const PRESETS: [string, string][] = [['real_estate', 'Real estate'], ['education
 
 /** Self-serve workspace creation. The industry choice seeds statuses, outcomes, lost reasons and fields (all editable later). */
 export default function Signup() {
+  const hydrated = useHydrated();
   const router = useRouter();
   const [f, setF] = useState({ name: '', email: '', password: '', tenantName: '', industryPreset: 'real_estate' });
   const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
@@ -29,7 +31,7 @@ export default function Signup() {
         <label htmlFor="em">Work email</label><input id="em" type="email" required autoComplete="username" value={f.email} onChange={set('email')} />
         <label htmlFor="pw">Password (10+ characters)</label><input id="pw" type="password" required minLength={10} maxLength={128} autoComplete="new-password" value={f.password} onChange={set('password')} />
         {error && <p className="err" role="alert">{error}</p>}
-        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy}>{busy ? 'Creating…' : 'Create workspace'}</button></div>
+        <div className="row" style={{ marginTop: 16 }}><button className="primary big" disabled={busy || !hydrated}>{busy ? 'Creating…' : 'Create workspace'}</button></div>
       </form>
       <p className="reason" style={{ textAlign: 'center' }}><a href="/login">I already have an account</a></p>
     </main>
