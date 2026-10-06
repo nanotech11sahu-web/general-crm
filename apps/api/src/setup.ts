@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
 import { cors, csrf, httpMetrics, requestContext, securityHeaders } from '@leaddesk/platform';
@@ -23,5 +24,9 @@ export function configureApp(app: INestApplication) {
   app.use(cookieParser());
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
   app.useGlobalFilters(new ErrorEnvelopeFilter());
+  if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_DOCS === '1') { // API shape is not secret, but production exposes it only on request
+    const doc = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('LeadDesk API').setVersion('1').setDescription('Bearer JWT (15 min) + httpOnly refresh cookie. Errors: { code, message, details, requestId }.').addBearerAuth().build());
+    SwaggerModule.setup('docs', app, doc, { jsonDocumentUrl: 'openapi.json' });
+  }
   return app;
 }

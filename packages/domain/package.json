@@ -10,7 +10,7 @@
   "dependencies": {
     "@leaddesk/db": "workspace:*",
     "@leaddesk/shared": "workspace:*",
-    "csv-parse": "^5.6.0",
+    "csv-parse": "^7.0.2",
     "exceljs": "^4.4.0",
     "@leaddesk/crypto": "workspace:*",
     "@leaddesk/connectors-core": "workspace:*",

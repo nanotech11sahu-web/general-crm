@@ -185,3 +185,12 @@ describe('two-factor, sessions and account state', () => {
     await clear(); await request(http).post('/v1/auth/login').send({ email: 'sess1@x.io', password: 'brand-new-pass-1' }).expect(403);
   });
 });
+
+describe('OpenAPI', () => {
+  it('serves the API description (paths for every module, bearer auth) outside production', async () => {
+    const doc = (await request(http).get('/openapi.json').expect(200)).body;
+    expect(doc.openapi).toMatch(/^3\./); expect(doc.components.securitySchemes.bearer).toBeDefined();
+    for (const p of ['/v1/auth/login', '/v1/leads', '/v1/do/queue', '/v1/pulse/kpis', '/v1/ai/settings', '/v1/messages', '/v1/tenant/export', '/healthz']) expect(Object.keys(doc.paths), p).toContain(p);
+    expect(Object.keys(doc.paths).length).toBeGreaterThan(100);
+  });
+});

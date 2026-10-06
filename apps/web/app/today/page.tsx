@@ -8,6 +8,7 @@ import { OutcomeSheet, type Outcome, type SheetTarget, type Suggestion } from '.
 interface Item { kind: string; leadId: string; leadName: string; reason: string; taskId?: string; callSessionId?: string; dueAt?: string; suggestedAction: { type: string } }
 interface Queue { items: Item[]; counts: Record<string, number>; total: number; caughtUp: boolean }
 interface Goal { gamification: boolean; goal?: number; done?: number; streakDays?: number }
+interface Onboarding { steps: { key: string; title: string; hint: string; done: boolean; href: string }[]; done: number; total: number; complete: boolean }
 interface Dialing { callSessionId: string; leadId: string; leadName: string; mode: 'cloud' | 'tap'; dialUri?: string }
 
 /** Hands the number to the phone's dialer. Overridable seam so browser tests (which have no dialer) can stub it. */
@@ -30,7 +31,7 @@ export default function Today() {
   const [dialing, setDialing] = useState<Dialing | null>(null); const [sheet, setSheet] = useState<SheetTarget | null>(null);
   const [suggest, setSuggest] = useState<(Suggestion & { leadId: string }) | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [role, setRole] = useState<string>('agent'); const [goal, setGoal] = useState<Goal | null>(null);
+  const [role, setRole] = useState<string>('agent'); const [goal, setGoal] = useState<Goal | null>(null); const [onb, setOnb] = useState<Onboarding | null>(null);
   const dialingRef = useRef<Dialing | null>(null); dialingRef.current = dialing;
 
   const say = useCallback((m: string) => { setToast(m); setTimeout(() => setToast((t) => (t === m ? null : t)), 4000); }, []);
@@ -49,7 +50,7 @@ export default function Today() {
       // everything the first screen needs is fetched in parallel, the queue first
       const q = load();
       void api<Outcome[]>('/v1/outcomes').then(setOutcomes).catch(() => undefined);
-      void api<{ role: string }>('/v1/me').then((m) => setRole(m.role)).catch(() => undefined);
+      void api<{ role: string }>('/v1/me').then((m) => { setRole(m.role); if (['owner', 'admin'].includes(m.role)) void api<Onboarding>('/v1/onboarding').then(setOnb).catch(() => undefined); }).catch(() => undefined);
       await q;
     })();
     return () => { alive = false; };
@@ -119,14 +120,22 @@ export default function Today() {
         <h1>Today</h1>
         <div className="row" style={{ alignItems: 'center' }}>
           <span className={`pill${live ? ' live' : ''}`} aria-label={live ? 'Live updates on' : 'Live updates off'}>{live ? '● live' : '○ offline'}</span>
+          {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/settings')} style={{ minHeight: 36, padding: '0 12px' }}>Settings</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ops')} style={{ minHeight: 36, padding: '0 12px' }}>Health</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ai')} style={{ minHeight: 36, padding: '0 12px' }}>AI</button>}
           {['owner', 'admin', 'manager'].includes(role) && <button onClick={() => router.push('/pulse')} style={{ minHeight: 36, padding: '0 12px' }}>Pulse</button>}
+          <button onClick={() => router.push('/security')} style={{ minHeight: 36, padding: '0 12px' }}>Security</button>
           <button onClick={async () => { await logout(); router.replace('/login'); }} style={{ minHeight: 36, padding: '0 12px' }}>Sign out</button>
         </div>
       </div>
 
       {error && <p className="err" role="alert">{error}</p>}
+      {onb && !onb.complete && (
+        <section className="card" aria-label="Get set up" data-testid="onboarding"><h2>Get set up ({onb.done}/{onb.total})</h2>
+          <ul className="list">{onb.steps.map((st) => <li key={st.key} style={{ opacity: st.done ? 0.55 : 1 }}><span>{st.done ? '✓' : '○'} {st.title}</span>{!st.done && <a href={st.href}>Do it</a>}</li>)}</ul>
+          <p className="reason">{onb.steps.find((x) => !x.done)?.hint}</p>
+        </section>
+      )}
       {goal?.gamification && goal.goal ? (
         <p className="reason" data-testid="goal" aria-label="Daily goal">Today: {goal.done} / {goal.goal} actions{goal.streakDays ? ` · ${goal.streakDays}-day streak` : ''}</p>
       ) : null}

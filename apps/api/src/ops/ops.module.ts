@@ -72,5 +72,36 @@ export class OpsController {
   async health() { const svc = new OpsService(this.f.db); const h = await svc.tenantHealth(); return { ...h, alerts: svc.alertsFrom(h) }; }
 }
 
-@Module({ controllers: [HealthController, OpsController], providers: [OpsFacade] })
+/** Non-secret deployment facts the UI needs (e.g. where providers should send webhooks). */
+@Controller('v1/app-config')
+export class AppConfigController {
+  @Get() config() { return { ingressUrl: (process.env.PUBLIC_INGRESS_URL ?? '').replace(/\/$/, '') || null, docsUrl: process.env.NODE_ENV === 'production' && process.env.ENABLE_DOCS !== '1' ? null : '/docs' }; }
+}
+
+/** First-run checklist for admins: computed from real data, so it can never get out of sync with what is configured. */
+@Controller('v1/onboarding')
+export class OnboardingController {
+  constructor(private readonly f: OpsFacade) {}
+  @Get() @RequirePermission('tenant.manage')
+  async checklist() {
+    const R = this.f.db.repos;
+    const [sources, channels, members, rules, sla, leads, calls] = await Promise.all([
+      R.connections.count({ category: 'lead_source', status: { $in: ['verified', 'degraded'] } }), R.connections.count({ category: { $in: ['whatsapp', 'sms'] }, status: { $in: ['verified', 'degraded'] } }),
+      R.memberships.count({ status: 'active' }), R.rules.count({ active: true }), R.slaPolicies.count({ active: true }), R.leads.count({ deletedAt: null }), R.callSessions.count({}),
+    ]);
+    const steps = [
+      { key: 'source', title: 'Connect a lead source', hint: 'Meta Lead Ads, Google Sheets or a website form: leads start arriving by themselves.', done: sources > 0, href: '/settings' },
+      { key: 'team', title: 'Invite your team', hint: 'Agents see only their own leads and a single Today list.', done: members > 1, href: '/settings' },
+      { key: 'routing', title: 'Choose how new leads are assigned', hint: 'Round-robin or by rule, with a claim window.', done: rules > 0, href: '/settings' },
+      { key: 'sla', title: 'Set a first-contact promise', hint: 'e.g. every lead called within 15 minutes.', done: sla > 0, href: '/settings' },
+      { key: 'messaging', title: 'Connect WhatsApp or SMS', hint: 'Optional: send templates and read replies inside LeadDesk.', done: channels > 0, href: '/settings' },
+      { key: 'first_lead', title: 'Get your first lead', hint: 'Add one by hand, import a file, or wait for the first webhook.', done: leads > 0, href: '/today' },
+      { key: 'first_call', title: 'Make your first call', hint: 'Open Today and tap Call.', done: calls > 0, href: '/today' },
+    ];
+    const done = steps.filter((x) => x.done).length;
+    return { steps, done, total: steps.length, complete: done === steps.length };
+  }
+}
+
+@Module({ controllers: [HealthController, OpsController, OnboardingController, AppConfigController], providers: [OpsFacade] })
 export class OpsModule {}

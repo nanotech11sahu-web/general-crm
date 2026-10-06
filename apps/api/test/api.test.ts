@@ -1332,3 +1332,20 @@ describe('privacy, export and deletion API (phase 7c)', () => {
     expect((await request(http).get('/v1/tenant/deletion').set(auth(owner)).expect(200)).body).toEqual({ scheduled: false });
   });
 });
+
+describe('onboarding checklist (phase 7e)', () => {
+  it('is computed from real configuration and flips as the workspace is set up; admins only', async () => {
+    const o = await signup('onb-owner');
+    const inv = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'onb-agent@x.io', role: 'agent' }).expect(201);
+    const ag = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'A', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+    await request(http).get('/v1/onboarding').set(auth(ag)).expect(403);
+    const done = async () => { const b = (await request(http).get('/v1/onboarding').set(auth(o.token)).expect(200)).body; return Object.fromEntries(b.steps.map((s: any) => [s.key, s.done])); };
+    // the agent above already makes it a two-person team
+    expect(await done()).toEqual({ source: false, team: true, routing: false, sla: false, messaging: false, first_lead: false, first_call: false });
+    await request(http).post('/v1/connections').set(auth(o.token)).send({ provider: 'website-webhook', name: 'Site' }).expect(201);
+    await request(http).put('/v1/sla').set(auth(o.token)).send({ policies: [{ name: 'D', claimSeconds: 120, firstContactSeconds: 900 }] }).expect(200);
+    await request(http).post('/v1/leads').set(auth(o.token)).send({ name: 'First Lead', contacts: [{ value: '9812300555' }] }).expect(201);
+    const d = await done(); expect(d).toMatchObject({ source: true, team: true, sla: true, first_lead: true, routing: false, first_call: false });
+    const b = (await request(http).get('/v1/onboarding').set(auth(o.token)).expect(200)).body; expect(b).toMatchObject({ done: 4, total: 7, complete: false });
+  });
+});

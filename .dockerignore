@@ -1,0 +1,9 @@
+**/node_modules
+**/.next
+**/test-results
+.git
+.env
+.env.*
+!.env.example
+backups
+data

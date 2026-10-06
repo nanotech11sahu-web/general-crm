@@ -29,8 +29,8 @@ export async function api<T = any>(path: string, init: { method?: string; body?:
   return body as T;
 }
 
-export async function login(email: string, password: string) {
-  const r = await api<{ accessToken: string }>('/v1/auth/login', { method: 'POST', body: { email, password } }, false);
+export async function login(email: string, password: string, totp?: string) {
+  const r = await api<{ accessToken: string }>('/v1/auth/login', { method: 'POST', body: { email, password, ...(totp ? { totp } : {}) } }, false);
   token = r.accessToken;
 }
 export async function logout() { await fetch('/v1/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined); token = null; }

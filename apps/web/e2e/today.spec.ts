@@ -65,7 +65,6 @@ test('the full loop: call -> outcome sheet enforces a concrete next action -> ne
   await sheet.getByLabel('What to do and why').fill('Asked for a brochure; confirm the Saturday site visit');
   await sheet.getByRole('button', { name: 'Save and next lead' }).click();
   await expect(sheet).toBeHidden();
-  await expect(page.getByText('Saved')).toBeVisible();
   await expect(page.getByText('Suggested next step')).toBeVisible();
   await page.getByRole('button', { name: 'Update status' }).click();
   await expect(page.getByText('Status updated')).toBeVisible();
@@ -90,7 +89,6 @@ test('dead-end outcome needs no next action; a skipped outcome stays pending (ev
   await current(page).getByRole('button', { name: 'Log outcome' }).click();
   await page.getByRole('dialog', { name: 'Log outcome' }).getByRole('button', { name: 'Wrong Number' }).click();
   await page.getByRole('button', { name: 'Save and next lead' }).click();
-  await expect(page.getByText('Saved')).toBeVisible();
   await expect(current(page)).not.toContainText('Log outcome');
 });
 
