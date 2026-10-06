@@ -262,3 +262,46 @@ describe('search, views, bulk, export, offboarding (phase 1b)', () => {
     await request(http).post(`/v1/users/${me}/offboard`).set(auth(owner)).send({}).expect(422);
   });
 });
+
+describe('imports API (phase 1c)', () => {
+  const waitDone = async (tok: string, id: string) => {
+    for (let i = 0; i < 100; i++) {
+      const r = (await request(http).get(`/v1/imports/${id}`).set(auth(tok)).expect(200)).body;
+      if (r.status === 'done' || r.status === 'failed') return r;
+      await new Promise((r2) => setTimeout(r2, 50));
+    }
+    throw new Error('import did not finish');
+  };
+  it('upload -> mapping -> dry run -> run -> poll -> error csv; agents are forbidden', async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'imp@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'Imp Co', industryPreset: 'real_estate' }).expect(201);
+    const tok = o.body.accessToken as string;
+    const inv = await request(http).post('/v1/invitations').set(auth(tok)).send({ email: 'imp-agent@x.io', role: 'agent' }).expect(201);
+    const agent = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'A', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+
+    const csv = 'Name,Mobile,City,BHK\nA One,9810011111,Pune,2\nA Two,12345,Pune,\nA Three,9810033333,Delhi,99\n';
+    await request(http).post('/v1/imports').set(auth(agent)).attach('file', Buffer.from(csv), 'l.csv').expect(403);
+    await request(http).post('/v1/imports').set(auth(tok)).expect(400);
+    await request(http).post('/v1/imports').set(auth(tok)).attach('file', Buffer.from('x'), 'l.pdf').expect(415);
+    const up = (await request(http).post('/v1/imports').set(auth(tok)).attach('file', Buffer.from(csv), 'l.csv').expect(201)).body;
+    expect(up.rowCount).toBe(3);
+    expect(up.suggestedMapping).toMatchObject({ Name: 'name', Mobile: 'phone', City: 'city', BHK: 'custom.bhk' });
+    await request(http).post(`/v1/imports/${up.id}/run`).set(auth(tok)).send({}).expect(409); // no mapping yet
+    await request(http).put(`/v1/imports/${up.id}/mapping`).set(auth(tok)).send({ mapping: { Name: 'name' } }).expect(422);
+    await request(http).put(`/v1/imports/${up.id}/mapping`).set(auth(tok)).send({ mapping: up.suggestedMapping }).expect(200);
+    const dry = (await request(http).post(`/v1/imports/${up.id}/dry-run`).set(auth(tok)).expect(201)).body;
+    expect(dry).toMatchObject({ total: 3, new: 1, invalid: 2 });
+    expect((await request(http).get('/v1/leads').set(auth(tok)).expect(200)).body.items).toHaveLength(0);
+    await request(http).post(`/v1/imports/${up.id}/run`).set(auth(tok)).send({ dedupePolicy: 'merge' }).expect(201);
+    await request(http).post(`/v1/imports/${up.id}/run`).set(auth(tok)).send({}).expect(409); // double start refused
+    const done = await waitDone(tok, up.id);
+    expect(done.status).toBe('done');
+    expect(done.stats.run).toMatchObject({ created: 1, rejected: 2 });
+    expect((await request(http).get('/v1/leads').set(auth(tok)).expect(200)).body.items).toHaveLength(1);
+    const errs = (await request(http).get(`/v1/imports/${up.id}/errors`).set(auth(tok)).expect(200)).text;
+    expect(errs).toContain('A Two'); expect(errs).toContain('bhk must be one of');
+    // another tenant cannot touch it
+    const other = await signup('imp-other');
+    await request(http).get(`/v1/imports/${up.id}`).set(auth(other.token)).expect(404);
+    await request(http).get(`/v1/imports/${up.id}/errors`).set(auth(other.token)).expect(404);
+  });
+});

@@ -8,9 +8,10 @@ import { TenantContextInterceptor } from './common/tenant-context.interceptor';
 import { ConnectionsModule } from './connections/connections.module';
 import { DbModule } from '@leaddesk/platform';
 import { LeadsModule } from './leads/leads.module';
+import { ImportsModule } from './imports/imports.module';
 
 @Module({
-  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule],
+  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },

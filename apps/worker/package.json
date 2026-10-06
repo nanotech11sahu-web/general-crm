@@ -2,7 +2,12 @@
   "name": "@leaddesk/worker",
   "version": "0.0.1",
   "private": true,
-  "scripts": { "dev": "tsx watch src/main.ts", "start": "tsx src/main.ts", "typecheck": "tsc -p . --noEmit", "test": "vitest run" },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run"
+  },
   "dependencies": {
     "@leaddesk/connectors-core": "workspace:*",
     "@leaddesk/db": "workspace:*",
@@ -12,7 +17,8 @@
     "bullmq": "^5.34.0",
     "ioredis": "^5.4.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "@leaddesk/domain": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

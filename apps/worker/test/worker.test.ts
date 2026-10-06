@@ -68,3 +68,23 @@ describe('OutboxDispatcher', () => {
     expect(await d.tick()).toBe(0);
   });
 });
+
+describe('ImportProcessor', () => {
+  it('runs an import once; redelivery is a no-op; wrong tenant cannot run it', async () => {
+    const { ImportProcessor } = await import('../src/import.processor');
+    const { ImportService, seedPreset } = await import('@leaddesk/domain');
+    await runWithTenant(A, () => seedPreset(db.repos, 'generic'));
+    const svc = new ImportService(db);
+    const up: any = await runWithTenant(A, async () => {
+      const u = await svc.create({ buffer: Buffer.from('Name,Phone\nW1,9700000001\nW2,9700000002'), originalname: 'w.csv' });
+      await svc.setMapping(u.id, { Name: 'name', Phone: 'phone' });
+      return u;
+    });
+    const p = new ImportProcessor(db);
+    const job = { name: 'import.run', data: { tenantId: A, importId: up.id }, attemptsMade: 0 };
+    expect(await p.process(job)).toMatchObject({ created: 2 });
+    expect(await p.process(job)).toEqual({ skipped: true });
+    expect(await p.process({ ...job, data: { tenantId: B, importId: up.id } })).toEqual({ skipped: true });
+    expect(await runWithTenant(A, () => db.repos.leads.count())).toBe(2);
+  });
+});

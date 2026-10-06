@@ -21,6 +21,23 @@ export type IntakeResult =
 const isDup = (e: any) => e?.code === 11000 || /E11000/.test(String(e?.message));
 const MERGE_UNDO_DAYS = 30;
 
+/** Non-throwing so dry runs, imports and the API all apply identical rules. */
+export function customFieldErrors(defs: any[], custom: Record<string, unknown>): Record<string, string> {
+  const byKey = new Map(defs.map((d) => [d.key, d]));
+  const errors: Record<string, string> = {};
+  for (const [k, v] of Object.entries(custom)) {
+    const d = byKey.get(k);
+    if (!d) { errors[k] = 'unknown field'; continue; }
+    if (v === null || v === '') continue;
+    if (d.type === 'number' && (typeof v !== 'number' || Number.isNaN(v))) errors[k] = 'must be a number';
+    if (d.type === 'boolean' && typeof v !== 'boolean') errors[k] = 'must be true/false';
+    if (d.type === 'text' && typeof v !== 'string') errors[k] = 'must be text';
+    if (d.type === 'date' && Number.isNaN(Date.parse(String(v)))) errors[k] = 'must be a date';
+    if (d.type === 'select' && !d.options.includes(String(v))) errors[k] = `must be one of ${d.options.join(', ')}`;
+  }
+  return errors;
+}
+
 export class LeadService {
   constructor(private readonly db: TenantDb) {}
   private get r() { return this.db.repos; }
@@ -45,6 +62,10 @@ export class LeadService {
   async intake(input: IntakeInput, opts: { dedupePolicy?: DedupePolicy } = {}): Promise<IntakeResult> {
     const { contacts, invalid } = normalizeContacts(input.contacts ?? [], await this.country());
     if (!contacts.length) return { outcome: 'rejected', reason: invalid.length ? 'no valid phone or email' : 'no contact provided', invalid };
+    if (input.custom && Object.keys(input.custom).length) {
+      const errs = customFieldErrors(await this.r.customFields.find(), input.custom);
+      if (Object.keys(errs).length) return { outcome: 'rejected', reason: `invalid custom fields: ${Object.entries(errs).map(([k, m]) => `${k} ${m}`).join('; ')}` };
+    }
     const sourceId = await this.ensureSource(input.source);
     for (let attempt = 0; ; attempt++) {
       try {
@@ -115,19 +136,7 @@ export class LeadService {
 
   /** Typed custom-field validation against the tenant's definitions. */
   private async validateCustom(custom: Record<string, unknown>) {
-    const defs: any[] = await this.r.customFields.find();
-    const byKey = new Map(defs.map((d) => [d.key, d]));
-    const errors: Record<string, string> = {};
-    for (const [k, v] of Object.entries(custom)) {
-      const d = byKey.get(k);
-      if (!d) { errors[k] = 'unknown field'; continue; }
-      if (v === null || v === '') continue;
-      if (d.type === 'number' && typeof v !== 'number') errors[k] = 'must be a number';
-      if (d.type === 'boolean' && typeof v !== 'boolean') errors[k] = 'must be true/false';
-      if (d.type === 'text' && typeof v !== 'string') errors[k] = 'must be text';
-      if (d.type === 'date' && Number.isNaN(Date.parse(String(v)))) errors[k] = 'must be a date';
-      if (d.type === 'select' && !d.options.includes(String(v))) errors[k] = `must be one of ${d.options.join(', ')}`;
-    }
+    const errors = customFieldErrors(await this.r.customFields.find(), custom);
     if (Object.keys(errors).length) throw new DomainError('invalid_custom_fields', 'Invalid custom fields', errors);
   }
 

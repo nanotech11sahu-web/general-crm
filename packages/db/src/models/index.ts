@@ -174,6 +174,7 @@ export function buildModels(conn: Connection) {
     jobId: { type: ObjectId, required: true },
     rowNo: { type: Number, required: true },
     data: Schema.Types.Mixed,
+    outcome: String, // set once the row has been processed: makes re-runs and crash-resume idempotent
   }, { timestamps: false });
   const ImportMapping = make(conn, 'ImportMapping', { name: { type: String, required: true }, mapping: Schema.Types.Mixed });
   const ImportRowError = make(conn, 'ImportRowError', {
