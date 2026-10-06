@@ -160,7 +160,8 @@ export function buildModels(conn: Connection) {
     fileKey: String,
     status: { type: String, enum: ['uploaded', 'mapped', 'dry_run_done', 'running', 'done', 'failed'], default: 'uploaded' },
     headers: [String],
-    rows: Schema.Types.Mixed, // parsed rows kept inline until object storage is wired (size-capped)
+    rowCount: { type: Number, default: 0 },
+    heartbeatAt: Date,
     mapping: Schema.Types.Mixed,
     dedupePolicy: { type: String, enum: ['skip', 'merge', 'overwrite'], default: 'merge' },
     sourceId: ObjectId,
@@ -168,6 +169,12 @@ export function buildModels(conn: Connection) {
     cursor: { type: Number, default: 0 },
     createdBy: ObjectId,
   });
+  /** Parsed rows live in their own collection (16MB doc limit); object storage replaces this in a later phase. */
+  const ImportRow = make(conn, 'ImportRow', {
+    jobId: { type: ObjectId, required: true },
+    rowNo: { type: Number, required: true },
+    data: Schema.Types.Mixed,
+  }, { timestamps: false });
   const ImportMapping = make(conn, 'ImportMapping', { name: { type: String, required: true }, mapping: Schema.Types.Mixed });
   const ImportRowError = make(conn, 'ImportRowError', {
     jobId: { type: ObjectId, required: true },
@@ -243,7 +250,7 @@ export function buildModels(conn: Connection) {
 
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
-    LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportMapping, ImportRowError,
+    LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
     IntegrationConnection, IntegrationInbox, Event, AuditLog, Counter,
   };
 }

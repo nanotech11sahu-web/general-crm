@@ -63,6 +63,7 @@ export function createRepositories(m: Models) {
     merges: new TenantScopedRepository(m.LeadMerge),
     views: new TenantScopedRepository(m.SavedView),
     importJobs: new TenantScopedRepository(m.ImportJob),
+    importRows: new TenantScopedRepository(m.ImportRow),
     importMappings: new TenantScopedRepository(m.ImportMapping),
     importRowErrors: new TenantScopedRepository(m.ImportRowError),
   };

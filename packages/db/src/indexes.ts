@@ -30,6 +30,7 @@ export const INDEXES: Idx[] = [
   { collection: 'leadmerges', keys: { tenantId: 1, winnerId: 1 } },
   { collection: 'savedviews', keys: { tenantId: 1, ownerId: 1 } },
   { collection: 'importjobs', keys: { tenantId: 1, createdAt: -1 } },
+  { collection: 'importrows', keys: { tenantId: 1, jobId: 1, rowNo: 1 }, options: { unique: true } },
   { collection: 'importmappings', keys: { tenantId: 1, name: 1 }, options: { unique: true } },
   { collection: 'importrowerrors', keys: { tenantId: 1, jobId: 1, rowNo: 1 } },
   { collection: 'leadcontactindexes', keys: { tenantId: 1, leadId: 1 } },
