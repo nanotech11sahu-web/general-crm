@@ -109,3 +109,34 @@ describe('ImportProcessor', () => {
     expect(await runWithTenant(A, () => db.repos.leads.count({ displayName: { $in: ['W1', 'W2'] } }))).toBe(2);
   });
 });
+
+describe('integrity processor and scheduler', () => {
+  it('heartbeat job runs under tenant context; unknown tenant cannot reach the connection', async () => {
+    const { IntegrityProcessor } = await import('../src/integrity');
+    const { LocalKeyService } = await import('@leaddesk/crypto');
+    const { randomBytes } = await import('node:crypto');
+    const { ConnectionService } = await import('@leaddesk/domain');
+    const keys = new LocalKeyService(randomBytes(32));
+    const reg = defaultRegistry();
+    const created: any = await runWithTenant(A, () => new ConnectionService(db, keys, reg).create({ provider: 'website-webhook', name: 'HB' }));
+    const p = new IntegrityProcessor(db, keys, reg);
+    const data = { tenantId: A, connectionId: created.connection.id };
+    expect(await p.process({ name: 'integrity.heartbeat', data, attemptsMade: 0 })).toMatchObject({ status: 'verified' });
+    expect(await p.process({ name: 'integrity.backfill', data: { ...data, days: 2 }, attemptsMade: 0 })).toEqual({ seen: 0, missing: 0, ingested: 0, failed: 0 });
+    await expect(p.process({ name: 'integrity.heartbeat', data: { ...data, tenantId: B }, attemptsMade: 0 })).rejects.toThrow('Connection not found');
+    await expect(p.process({ name: 'integrity.heartbeat', data: { connectionId: data.connectionId } as any, attemptsMade: 0 })).rejects.toThrow(/missing tenantId/);
+  });
+  it('scheduler sweeps every live connection across tenants once per window and skips revoked ones', async () => {
+    const { IntegrityScheduler } = await import('../src/integrity');
+    const revoked: any = await runWithTenant(B, () => db.repos.connections.create({ provider: 'website-webhook', category: 'lead_source', name: 'Dead', publicId: 'dead-pub', status: 'revoked' }));
+    await runWithTenant(B, () => db.repos.connections.create({ provider: 'website-webhook', category: 'lead_source', name: 'Live B', publicId: 'live-b', status: 'verified' }));
+    const queued = new Map<string, any>();
+    const sch = new IntegrityScheduler(sys, async (j) => { queued.set(j.jobId, j); }, () => new Date('2026-03-10T06:31:00Z'));
+    const n1 = await sch.sweep('heartbeat'); const n2 = await sch.sweep('heartbeat');
+    expect(n1).toBe(n2);
+    expect(queued.size).toBe(n1); // second sweep in the same window produced identical job ids
+    const tenants = new Set([...queued.values()].map((j) => j.data.tenantId));
+    expect(tenants.has(A) && tenants.has(B)).toBe(true);
+    expect([...queued.values()].some((j) => j.data.connectionId === String(revoked._id))).toBe(false);
+  });
+});

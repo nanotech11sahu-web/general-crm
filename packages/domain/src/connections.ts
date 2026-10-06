@@ -12,6 +12,9 @@ const check = (f: FieldDef, v: string) => {
   return undefined;
 };
 
+/** Display hint: last 4 chars of the last credential value (never derived from the JSON envelope). */
+export const hintOf = (creds: Record<string, string>) => `••••${(Object.values(creds).filter(Boolean).pop() ?? '').slice(-4)}`;
+
 /** Secrets never leave this class except as a one-time reveal of platform-generated values. */
 export class ConnectionService {
   constructor(private readonly db: TenantDb, private readonly keys: KeyService, private readonly registry: ConnectorRegistry) {}
@@ -51,9 +54,8 @@ export class ConnectionService {
   }
 
   private async seal(id: unknown, creds: Record<string, string>) {
-    const first = Object.values(creds).filter(Boolean).pop() ?? '';
     const sealed = await sealSecret(this.keys, { tenantId: requireTenantId(), connectionId: String(id) }, JSON.stringify(creds));
-    return { secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef, secretHint: `••••${first.slice(-4)}` };
+    return { secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef, secretHint: hintOf(creds) };
   }
 
   async create(i: { provider: string; name: string; credentials?: Record<string, string>; config?: Record<string, unknown> }) {

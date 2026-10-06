@@ -175,6 +175,9 @@ importers:
       '@leaddesk/connectors-core':
         specifier: workspace:*
         version: link:../../packages/connectors/core
+      '@leaddesk/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@leaddesk/db':
         specifier: workspace:*
         version: link:../../packages/db

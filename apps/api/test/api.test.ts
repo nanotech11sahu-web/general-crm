@@ -346,3 +346,24 @@ describe('imports API (phase 1c)', () => {
     await request(http).get(`/v1/imports/${up.id}/errors`).set(auth(other.token)).expect(404);
   });
 });
+
+describe('notifications (phase 2b)', () => {
+  it('admin-audience alerts reach admins only; reading is scoped; other tenants see nothing', async () => {
+    const { TENANT_DB } = await import('@leaddesk/platform');
+    const { DbNotifier } = await import('@leaddesk/domain');
+    const { runWithTenant } = await import('@leaddesk/db');
+    const db = app.get(TENANT_DB);
+    const o = await signup('notif-o'); const other = await signup('notif-x');
+    const inv = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'notif-agent@x.io', role: 'agent' }).expect(201);
+    const agent = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'A', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+    const n = new DbNotifier(db);
+    await runWithTenant(o.tenantId, () => n.notify({ kind: 'connection.degraded', audience: 'admins', payload: { name: 'Meta', reconnectPath: '/v1/connections/x/reconnect' }, dedupeKey: 'd1' }));
+    await runWithTenant(o.tenantId, () => n.notify({ kind: 'connection.degraded', audience: 'admins', payload: {}, dedupeKey: 'd1' })); // duplicate: ignored
+    const list = (await request(http).get('/v1/notifications').set(auth(o.token)).expect(200)).body;
+    expect(list).toHaveLength(1); expect(list[0].kind).toBe('connection.degraded');
+    expect((await request(http).get('/v1/notifications').set(auth(agent)).expect(200)).body).toHaveLength(0);
+    expect((await request(http).get('/v1/notifications').set(auth(other.token)).expect(200)).body).toHaveLength(0);
+    expect((await request(http).post(`/v1/notifications/${list[0]._id}/read`).set(auth(agent)).expect(201)).body.ok).toBe(false);
+    expect((await request(http).post(`/v1/notifications/${list[0]._id}/read`).set(auth(o.token)).expect(201)).body.ok).toBe(true);
+  });
+});

@@ -51,12 +51,25 @@ export interface ConnectorContext {
   credentials: () => Promise<Record<string, string>>;
 }
 
+/** Throw from any connector call when the provider says the grant is gone (token revoked/app removed). */
+export class AuthRevokedError extends Error {
+  constructor(message = 'Authorization revoked by provider') { super(message); this.name = 'AuthRevokedError'; }
+}
+
+export interface BackfillLead { externalRef: string; fields: Record<string, unknown>; createdAt?: Date }
+export interface HealthResult { ok: boolean; detail?: string }
+
 export interface Connector {
   manifest: ConnectorManifest;
   verify(ctx: ConnectorContext): Promise<{ ok: boolean; detail?: string }>;
-  health(ctx: ConnectorContext): Promise<{ ok: boolean; detail?: string }>;
+  health(ctx: ConnectorContext): Promise<HealthResult>;
   parseWebhook?(raw: unknown): Promise<CanonicalEvent[]>;
-  backfill?(ctx: ConnectorContext, since: Date): AsyncIterable<unknown>;
+  /** Pull leads created since `since` so gaps left by dropped webhooks can be reconciled. */
+  backfill?(ctx: ConnectorContext, since: Date): AsyncIterable<BackfillLead>;
+  /** Exchange/refresh the access token; the platform stores the returned credentials encrypted. */
+  refresh?(ctx: ConnectorContext): Promise<{ credentials: Record<string, string>; expiresAt: Date }>;
+  /** Verify the provider-side webhook subscription still exists; re-create it when missing. */
+  ensureSubscribed?(ctx: ConnectorContext): Promise<{ ok: boolean; fixed?: boolean; detail?: string }>;
 }
 
 export class ConnectorRegistry {

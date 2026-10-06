@@ -9,9 +9,10 @@ import { ConnectionsModule } from './connections/connections.module';
 import { DbModule } from '@leaddesk/platform';
 import { LeadsModule } from './leads/leads.module';
 import { ImportsModule } from './imports/imports.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
-  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule],
+  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
