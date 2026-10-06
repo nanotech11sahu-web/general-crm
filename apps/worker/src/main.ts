@@ -10,6 +10,7 @@ import { ImportProcessor } from './import.processor';
 import { OutboxDispatcher } from './outbox-dispatcher';
 import { IntegrityProcessor, IntegrityScheduler } from './integrity';
 import { DoSweeper } from './do-sweeper';
+import { SlaSweeper } from './sla-sweeper';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
@@ -53,13 +54,19 @@ async function bootstrap() {
   const doWorker = new Worker('do-sweep', async () => doSweeper.run(), { connection, concurrency: 1 });
   doWorker.on('failed', (job, err) => console.error('do sweep failed', err.message));
 
+  const slaSweeper = new SlaSweeper(db, sys);
+  const slaQueue = new Queue('sla-sweep', { connection });
+  await slaQueue.upsertJobScheduler('sla-sweep', { every: 30_000 }, { name: 'sla.sweep', data: {} });
+  const slaWorker = new Worker('sla-sweep', async () => slaSweeper.run(), { connection, concurrency: 1 });
+  slaWorker.on('failed', (job, err) => console.error('sla sweep failed', err.message));
+
   const events = new Queue('events', { connection });
   const dispatcher = new OutboxDispatcher(sys, {
     publish: async (e) => { await events.add(e.type, e, { jobId: e.eventId, removeOnComplete: 1000 }); },
   });
   dispatcher.start();
 
-  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await app.close(); process.exit(0); };
+  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await slaWorker.close(); await app.close(); process.exit(0); };
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 }
 bootstrap();

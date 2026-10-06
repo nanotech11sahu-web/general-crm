@@ -157,3 +157,11 @@ describe('DoSweeper', () => {
     expect(await runWithTenant(A, () => db.repos.notifications.count({ kind: 'task.missed' }))).toBe(2); // agent + managers
   });
 });
+
+describe('SlaSweeper', () => {
+  it('runs the SLA sweep across tenants without error and is a no-op when nothing is due', async () => {
+    const { SlaSweeper } = await import('../src/sla-sweeper');
+    const r = await new SlaSweeper(db, sys, () => new Date(Date.now() - 86400_000)).run(); // clock in the past: nothing can be due
+    expect(r).toEqual({ reassigned: 0, escalated: 0 });
+  });
+});

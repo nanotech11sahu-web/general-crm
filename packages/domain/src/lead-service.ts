@@ -1,5 +1,6 @@
 import { getContext, newObjectId, requireTenantId, toObjectId, withTransaction, type TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
+import { RoutingService } from './routing';
 import { cleanName, nameTokens, normalizeContacts, phoneSearchKeys, type NormContact, type RawContact } from './normalize';
 
 export interface IntakeInput {
@@ -13,6 +14,8 @@ export interface IntakeInput {
   raw?: Record<string, string>;
   ownerId?: string;
   city?: string; language?: string; budgetText?: string;
+  /** 0-100; set by scoring (rules/AI) so routing can use it at creation time. */
+  score?: number;
   tags?: string[];
   custom?: Record<string, unknown>;
 }
@@ -42,7 +45,8 @@ export function customFieldErrors(defs: any[], custom: Record<string, unknown>):
 }
 
 export class LeadService {
-  constructor(private readonly db: TenantDb) {}
+  private readonly routing: RoutingService;
+  constructor(private readonly db: TenantDb) { this.routing = new RoutingService(db); }
   private get r() { return this.db.repos; }
   private actor() { return getContext()?.userId; }
 
@@ -96,12 +100,13 @@ export class LeadService {
       statusId: firstStatus?._id, sourceId, externalRef: input.externalRef, metaLeadId: input.metaLeadId,
       campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName,
       ownerId: input.ownerId ? toObjectId(input.ownerId) : undefined, assignedAt: input.ownerId ? new Date() : undefined,
-      city: input.city, language: input.language, budgetText: input.budgetText, tags: input.tags ?? [], custom: input.custom ?? {},
+      city: input.city, language: input.language, budgetText: input.budgetText, score: input.score, tags: input.tags ?? [], custom: input.custom ?? {},
       contacts, phoneNorms: this.searchKeys(contacts), lastEnquiryAt: new Date(),
     });
     await this.r.contactIndex.createMany(contacts.map((c) => ({ kind: c.kind, valueNorm: c.valueNorm, leadId: lead._id })));
     await this.activity(lead._id, 'lead_created', { source: input.source, campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName, externalRef: input.externalRef, answers: input.raw && Object.keys(input.raw).length ? input.raw : undefined });
     await this.r.outbox.add('lead.created', String(lead._id), { sourceId: sourceId ? String(sourceId) : null });
+    if (!input.ownerId) await this.routing.routeNew(lead._id); // no-op until the tenant configures routing
     return { outcome: 'created', leadId: String(lead._id) };
   }
 

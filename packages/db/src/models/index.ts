@@ -44,6 +44,7 @@ export function buildModels(conn: Connection) {
     languages: [String],
     skills: [String],
     maxOpenLeads: Number,
+    onLeaveUntil: Date,
   });
 
   const Team = make(conn, 'Team', {
@@ -107,6 +108,8 @@ export function buildModels(conn: Connection) {
     assignedAt: Date,
     claimedAt: Date,
     mergedInto: ObjectId,
+    lastOwnerId: ObjectId,
+    sla: Schema.Types.Mixed, // { policyId, state, claimDueAt, firstContactDueAt, reassignCount, triedUserIds[] }
     deletedAt: Date,
   });
 
@@ -267,6 +270,36 @@ export function buildModels(conn: Connection) {
     readAt: Date,
   });
 
+  /** First matching rule wins (priority asc). */
+  const AssignmentRule = make(conn, 'AssignmentRule', {
+    name: { type: String, required: true },
+    priority: { type: Number, required: true },
+    conditions: { type: Schema.Types.Mixed, default: {} },
+    action: { type: Schema.Types.Mixed, required: true },
+    active: { type: Boolean, default: true },
+  });
+  const RoutingDecision = make(conn, 'RoutingDecision', {
+    leadId: { type: ObjectId, required: true },
+    ruleId: ObjectId,
+    chosenUserId: ObjectId,
+    strategy: String,
+    reason: String, // 'new' | 'sla_claim' | 'sla_first_contact' | 'manual'
+    explanation: { type: String, required: true },
+  });
+  const SlaPolicy = make(conn, 'SlaPolicy', {
+    name: { type: String, required: true },
+    firstContactSeconds: { type: Number, required: true },
+    claimSeconds: { type: Number, required: true },
+    maxReassignments: { type: Number, default: 2 },
+    appliesTo: { type: Schema.Types.Mixed, default: {} }, // { sourceKinds?: string[] }
+    active: { type: Boolean, default: true },
+  });
+  const Presence = make(conn, 'Presence', {
+    userId: { type: ObjectId, required: true },
+    state: { type: String, enum: ['online', 'on_call', 'away', 'offline'], default: 'offline' },
+    updatedAt: { type: Date, default: Date.now },
+  }, { timestamps: false });
+
   /** Call dispositions per tenant, seeded by the industry preset. */
   const Outcome = make(conn, 'Outcome', {
     label: { type: String, required: true },
@@ -328,7 +361,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

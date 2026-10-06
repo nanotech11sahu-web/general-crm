@@ -57,6 +57,10 @@ export function createRepositories(m: Models) {
     oauthStates: new TenantScopedRepository(m.OAuthState),
     outcomes: new TenantScopedRepository(m.Outcome),
     tasks: new TenantScopedRepository(m.Task),
+    rules: new TenantScopedRepository(m.AssignmentRule),
+    routingDecisions: new TenantScopedRepository(m.RoutingDecision),
+    slaPolicies: new TenantScopedRepository(m.SlaPolicy),
+    presence: new TenantScopedRepository(m.Presence),
     callSessions: new TenantScopedRepository(m.CallSession),
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
@@ -98,6 +102,15 @@ export function createSystemOps(m: Models) {
     /** Missed tasks that have sat unhandled long enough to escalate to a manager. */
     escalatableTasks: (missedBefore: Date, limit = 500) =>
       runAsSystem('tasks.sweep', () => m.Task.find({ status: 'missed', escalatedAt: null, missedAt: { $lt: missedBefore } }, { tenantId: 1, missedAt: 1 }).sort({ missedAt: 1 }).limit(limit).lean().exec()),
+
+    /** SLA sweeper: leads whose claim or first-contact timer has expired (cross-tenant, then handled per tenant). */
+    slaDue: (now: Date, limit = 500) =>
+      runAsSystem('sla.sweep', async () => {
+        const claim = await m.Lead.find({ 'sla.state': 'awaiting_claim', 'sla.claimDueAt': { $lt: now }, deletedAt: null }, { tenantId: 1 }).limit(limit).lean().exec();
+        const first = await m.Lead.find({ 'sla.state': { $in: ['awaiting_claim', 'claimed'] }, 'sla.firstContactDueAt': { $lt: now }, firstContactedAt: null, deletedAt: null }, { tenantId: 1 }).limit(limit).lean().exec();
+        const seen = new Set<string>();
+        return [...claim.map((l: any) => ({ ...l, kind: 'claim' as const })), ...first.map((l: any) => ({ ...l, kind: 'first_contact' as const }))].filter((x) => !seen.has(String(x._id)) && seen.add(String(x._id)));
+      }),
 
     findUserByEmail: (email: string) =>
       runAsSystem('auth.findUserByEmail', () => m.User.findOne({ email: email.toLowerCase() }).exec()),

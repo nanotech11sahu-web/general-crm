@@ -571,3 +571,81 @@ describe('Do engine API (phase 3a)', () => {
     await request(http).post(`/v1/leads/${l}/outcome`).set(auth(agent)).send({ outcomeId: '65f0000000000000000000bb' }).expect(403);
   });
 });
+
+describe('routing + SLA API (phase 3b)', () => {
+  let owner: string; let tenantId: string;
+  const agents: { tok: string; id: string }[] = [];
+  const mk = async (email: string) => {
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201);
+    const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email, password: 'agent-pass-123' }).expect(201);
+    const id = (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string;
+    await request(http).put('/v1/me/presence').set(auth(r.body.accessToken)).send({ state: 'online' }).expect(200);
+    return { tok: r.body.accessToken as string, id };
+  };
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'route-owner@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'Route Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    for (const n of [1, 2]) agents.push(await mk(`route-a${n}@x.io`));
+  });
+
+  it('configure rules + SLA (admin only, validated); leads auto-route with explanation; agent sees them; claim works', async () => {
+    await request(http).put('/v1/rules/assignment').set(auth(agents[0].tok)).send({ rules: [] }).expect(403);
+    await request(http).put('/v1/rules/assignment').set(auth(owner)).send({ rules: [{ name: 'bad', action: { kind: 'specific_user' } }] }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_rule'));
+    await request(http).put('/v1/rules/assignment').set(auth(owner)).send({ rules: [{ name: 'ghost', action: { kind: 'specific_user', userId: '65f0000000000000000000cc' } }] }).expect(422);
+    const set = (await request(http).put('/v1/rules/assignment').set(auth(owner)).send({ rules: [{ name: 'Pune', conditions: { cities: ['Pune'], evil: 1 }, action: { kind: 'round_robin', poolUserIds: agents.map((a) => a.id), junk: true } }], default: { kind: 'round_robin', poolUserIds: [agents[1].id] } }).expect(200)).body;
+    expect(set.rules[0].conditions).toEqual({ cities: ['Pune'] }); expect(set.rules[0].action.junk).toBeUndefined(); // unknown keys are dropped
+    await request(http).put('/v1/sla').set(auth(owner)).send({ policies: [{ name: 'bad', claimSeconds: 5, firstContactSeconds: 100 }] }).expect(422);
+    await request(http).put('/v1/sla').set(auth(owner)).send({ policies: [{ name: 'Default', claimSeconds: 120, firstContactSeconds: 900, maxReassignments: 1 }] }).expect(200);
+    expect((await request(http).get('/v1/rules/assignment').set(auth(owner)).expect(200)).body.default).toMatchObject({ kind: 'round_robin' });
+
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) ids.push((await request(http).post('/v1/leads').set(auth(owner)).send({ name: `Routed ${i}`, city: 'Pune', contacts: [{ value: `98770000${i}1` }] }).expect(201)).body.leadId);
+    const owners = await Promise.all(ids.map(async (id) => (await request(http).get(`/v1/leads/${id}`).set(auth(owner)).expect(200)).body.ownerId));
+    expect(owners.filter((x) => x === agents[0].id)).toHaveLength(2); expect(owners.filter((x) => x === agents[1].id)).toHaveLength(2);
+    const d = (await request(http).get(`/v1/leads/${ids[0]}/routing`).set(auth(owner)).expect(200)).body;
+    expect(d[0].explanation).toMatch(/Rule "Pune" \(#1\) matched: city=Pune -> round-robin over 2/);
+    const other = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Elsewhere', city: 'Delhi', contacts: [{ value: '9877000099' }] }).expect(201)).body.leadId;
+    expect((await request(http).get(`/v1/leads/${other}`).set(auth(owner)).expect(200)).body.ownerId).toBe(agents[1].id); // default pool
+
+    // agent 0 sees their leads in Today with the SLA-aware reason, and can claim; the other agent cannot claim it
+    const mine = ids.find((_, i) => owners[i] === agents[0].id)!;
+    const q = (await request(http).get('/v1/do/queue').set(auth(agents[0].tok)).expect(200)).body;
+    expect(q.items.every((i: any) => i.kind === 'new_lead')).toBe(true);
+    await request(http).post(`/v1/leads/${mine}/claim`).set(auth(agents[1].tok)).expect(403);
+    expect((await request(http).post(`/v1/leads/${mine}/claim`).set(auth(agents[0].tok)).expect(201)).body).toEqual({ ok: true, alreadyClaimed: false });
+    await request(http).get(`/v1/leads/${mine}/routing`).set(auth(agents[1].tok)).expect(403); // not their lead
+  });
+
+  it('SLA sweeper reassigns an unclaimed lead and notifies; presence endpoint is validated and team view is manager-only', async () => {
+    const { TENANT_DB, SYSTEM_OPS } = await import('@leaddesk/platform'); const { SlaService } = await import('@leaddesk/domain'); const { runWithTenant } = await import('@leaddesk/db');
+    const db = app.get(TENANT_DB); const sys = app.get(SYSTEM_OPS);
+    const id = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Unclaimed', city: 'Pune', contacts: [{ value: '9877000077' }] }).expect(201)).body.leadId;
+    const before = (await request(http).get(`/v1/leads/${id}`).set(auth(owner)).expect(200)).body.ownerId;
+    await new SlaService(db, () => new Date(Date.now() + 10 * 60_000)).sweepAll(sys);
+    const after = (await request(http).get(`/v1/leads/${id}`).set(auth(owner)).expect(200)).body.ownerId;
+    expect(after).not.toBe(before);
+    const decisions = (await request(http).get(`/v1/leads/${id}/routing`).set(auth(owner)).expect(200)).body;
+    expect(decisions[0].reason).toBe('sla_claim');
+    const notes = (await request(http).get('/v1/notifications').set(auth(agents.find((a) => a.id === before)!.tok)).expect(200)).body;
+    expect(notes.map((n: any) => n.kind)).toContain('sla.breached');
+    void runWithTenant; void tenantId;
+
+    await request(http).put('/v1/me/presence').set(auth(agents[0].tok)).send({ state: 'on_call' }).expect(400); // system-controlled
+    await request(http).put('/v1/me/presence').set(auth(agents[0].tok)).send({ state: 'away' }).expect(200);
+    await request(http).get('/v1/team/presence').set(auth(agents[0].tok)).expect(403);
+    const team = (await request(http).get('/v1/team/presence').set(auth(owner)).expect(200)).body;
+    expect(team.find((t: any) => t.userId === agents[0].id).state).toBe('away');
+  });
+
+  it('profile (routing inputs) can be edited by admins only and affects routing', async () => {
+    await request(http).patch(`/v1/users/${agents[1].id}/profile`).set(auth(agents[0].tok)).send({ skills: ['x'] }).expect(403);
+    await request(http).patch(`/v1/users/${agents[1].id}/profile`).set(auth(owner)).send({ maxOpenLeads: 0 }).expect(400);
+    await request(http).patch(`/v1/users/${agents[1].id}/profile`).set(auth(owner)).send({ languages: ['Hindi'], skills: ['premium'], onLeaveUntil: new Date(Date.now() + 86400_000).toISOString() }).expect(200);
+    await request(http).put('/v1/rules/assignment').set(auth(owner)).send({ rules: [{ name: 'All', action: { kind: 'round_robin', poolUserIds: agents.map((a) => a.id) } }] }).expect(200);
+    for (let i = 0; i < 3; i++) {
+      const id = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: `Leave ${i}`, contacts: [{ value: `98770011${i}1` }] }).expect(201)).body.leadId;
+      expect((await request(http).get(`/v1/leads/${id}`).set(auth(owner)).expect(200)).body.ownerId).not.toBe(agents[1].id); // on leave
+    }
+    await request(http).patch('/v1/users/65f0000000000000000000dd/profile').set(auth(owner)).send({ skills: [] }).expect(404);
+  });
+});

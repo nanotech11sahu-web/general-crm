@@ -2,6 +2,7 @@ import { getContext, requireTenantId, runWithTenant, toObjectId, withTransaction
 import { DomainError, notFound } from './errors';
 import { DbNotifier, type Notifier } from './integrity';
 import { LeadService } from './lead-service';
+import { PresenceService, SlaService } from './routing';
 
 export type TaskType = 'call' | 'whatsapp' | 'sms' | 'visit' | 'other';
 export interface NextAction { dueAt: Date | string; contextNote: string; type?: TaskType }
@@ -38,7 +39,9 @@ export interface QueueItem {
 
 export class DoService {
   private readonly leads: LeadService;
-  constructor(private readonly db: TenantDb, private readonly now: () => Date = () => new Date(), private readonly notifier: Notifier = new DbNotifier(db)) { this.leads = new LeadService(db); }
+  private readonly presence: PresenceService;
+  private readonly sla: SlaService;
+  constructor(private readonly db: TenantDb, private readonly now: () => Date = () => new Date(), private readonly notifier: Notifier = new DbNotifier(db)) { this.leads = new LeadService(db); this.presence = new PresenceService(db, now); this.sla = new SlaService(db, now, notifier); }
   private get r() { return this.db.repos; }
   private actor(): string { const id = getContext()?.userId; if (!id) throw new DomainError('unauthenticated', 'No acting user', undefined, 401); return id; }
 
@@ -124,6 +127,7 @@ export class DoService {
     const phone = lead.contacts.find((c: any) => c.kind === 'phone' && !(c.optedOutChannels ?? []).includes('call')) ?? lead.contacts.find((c: any) => c.kind === 'phone');
     if (!phone) throw new DomainError('no_phone', 'This lead has no phone number');
     const s: any = await this.r.callSessions.create({ leadId: lead._id, agentId: toObjectId(agent), mode: 'tap', direction: 'out', state: 'dialed', startedAt: this.now(), durationSource: 'self_reported' });
+    await this.presence.set(agent, 'on_call');
     await this.activity(lead._id, 'call_started', { callSessionId: String(s._id), mode: 'tap' });
     return { callSessionId: String(s._id), dialUri: `tel:${phone.valueNorm}` }; // reduced custody in tap mode (spec 11.6b)
   }
@@ -137,6 +141,7 @@ export class DoService {
     const elapsed = Math.max(0, Math.round((endedAt.getTime() - new Date(s.startedAt).getTime()) / 1000));
     const durationS = Math.min(o.durationS ?? elapsed, 4 * 3600);
     await this.r.callSessions.updateOne({ _id: s._id, state: { $in: ['dialed', 'ringing', 'answered'] } }, { $set: { state: 'ended', endedAt, durationS } });
+    await this.presence.set(this.actor(), 'online');
     return { callSessionId, durationS, suggestedDurationS: elapsed, durationSource: s.durationSource };
   }
 
@@ -182,6 +187,7 @@ export class DoService {
       const set: Record<string, unknown> = { lastContactedAt: now };
       if (!lead.firstContactedAt) set.firstContactedAt = now;
       await this.r.leads.updateOne({ _id: lead._id }, { $set: set });
+      if (!lead.firstContactedAt) await this.sla.markContacted(lead._id); // first contact cancels the SLA timers
       if (session) await this.r.callSessions.updateOne({ _id: session._id }, { $set: { outcomeId: outcome._id, outcomeLoggedAt: now, state: 'ended', ...(i.durationS !== undefined ? { durationS: i.durationS } : {}) } });
 
       let created: any;

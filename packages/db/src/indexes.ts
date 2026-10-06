@@ -48,6 +48,13 @@ export const INDEXES: Idx[] = [
   { collection: 'notifications', keys: { tenantId: 1, audience: 1, userId: 1, createdAt: -1 } },
   { collection: 'notifications', keys: { tenantId: 1, dedupeKey: 1 }, options: { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } } },
   { collection: 'notifications', keys: { createdAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
+  { collection: 'assignmentrules', keys: { tenantId: 1, priority: 1 } },
+  { collection: 'routingdecisions', keys: { tenantId: 1, leadId: 1, createdAt: -1 } },
+  { collection: 'slapolicies', keys: { tenantId: 1, active: 1 } },
+  { collection: 'presences', keys: { tenantId: 1, userId: 1 }, options: { unique: true } },
+  // SLA timers are durable lead state; the sweeper reads them across tenants (partial = only live timers)
+  { collection: 'leads', keys: { 'sla.claimDueAt': 1 }, options: { partialFilterExpression: { 'sla.state': 'awaiting_claim' } } },
+  { collection: 'leads', keys: { 'sla.firstContactDueAt': 1 }, options: { partialFilterExpression: { 'sla.state': { $in: ['awaiting_claim', 'claimed'] } } } },
   { collection: 'outcomes', keys: { tenantId: 1, label: 1 }, options: { unique: true } },
   { collection: 'tasks', keys: { tenantId: 1, assigneeId: 1, status: 1, dueAt: 1 } },
   { collection: 'tasks', keys: { tenantId: 1, leadId: 1, status: 1 } },

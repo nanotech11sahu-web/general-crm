@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Inject, Injectable, Module, Param, Post } from '@nestjs/common';
-import { ArrayMaxSize, IsArray, IsOptional, IsString } from 'class-validator';
-import { OffboardService } from '@leaddesk/domain';
+import { ArrayMaxSize, IsArray, IsDateString, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Patch } from '@nestjs/common';
+import { DomainError, OffboardService } from '@leaddesk/domain';
 import { TENANT_DB } from '@leaddesk/platform';
 import { toObjectId, type TenantDb } from '@leaddesk/db';
 import { MembershipCache, RequirePermission } from '../common/guards';
@@ -8,6 +9,15 @@ import { MembershipCache, RequirePermission } from '../common/guards';
 class OffboardDto {
   @IsOptional() @IsString() reassignTo?: string;
   @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) poolUserIds?: string[];
+}
+
+class ProfileDto {
+  @IsOptional() @IsObject() workingHours?: Record<string, unknown>;
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) languages?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(30) @IsString({ each: true }) skills?: string[];
+  @IsOptional() @IsInt() @Min(1) @Max(10000) maxOpenLeads?: number;
+  @IsOptional() @IsDateString() onLeaveUntil?: string | null;
+  @IsOptional() @IsString() teamId?: string | null;
 }
 
 @Injectable()
@@ -22,6 +32,20 @@ export class UsersService {
     return ms.map((m) => ({ userId: String(m.userId), role: m.role, status: m.status, teamId: m.teamId ? String(m.teamId) : null, name: by.get(String(m.userId))?.name, email: by.get(String(m.userId))?.email }));
   }
 
+  /** Routing inputs: working hours, languages, skills, capacity, leave, team. */
+  async updateProfile(userId: string, p: ProfileDto) {
+    const set: Record<string, unknown> = {};
+    for (const k of ['workingHours', 'languages', 'skills', 'maxOpenLeads'] as const) if (p[k] !== undefined) set[k] = p[k];
+    if (p.onLeaveUntil !== undefined) set.onLeaveUntil = p.onLeaveUntil ? new Date(p.onLeaveUntil) : null;
+    if (p.teamId !== undefined) {
+      if (p.teamId && !(await this.db.repos.teams.findById(p.teamId))) throw new DomainError('not_found', 'Team not found', undefined, 404);
+      set.teamId = p.teamId ? toObjectId(p.teamId) : null;
+    }
+    const r = await this.db.repos.memberships.updateOne({ userId: toObjectId(userId) }, { $set: set });
+    if (r.matchedCount !== 1) throw new DomainError('not_found', 'User not found', undefined, 404);
+    return { ok: true };
+  }
+
   async offboard(userId: string, plan: OffboardDto) {
     const m: any = await this.db.repos.memberships.findOne({ userId: toObjectId(userId) });
     const out = await this.offboarding.offboard(userId, plan);
@@ -34,6 +58,9 @@ export class UsersService {
 export class UsersController {
   constructor(private readonly svc: UsersService) {}
   @Get() @RequirePermission('leads.reassign') list() { return this.svc.list(); }
+  @Patch(':id/profile') @RequirePermission('users.manage')
+  profile(@Param('id') id: string, @Body() b: ProfileDto) { return this.svc.updateProfile(id, b); }
+
   @Post(':id/offboard') @RequirePermission('users.offboard')
   offboard(@Param('id') id: string, @Body() b: OffboardDto) { return this.svc.offboard(id, b); }
 }

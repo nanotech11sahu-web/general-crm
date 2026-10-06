@@ -28,6 +28,7 @@ export const SYSTEM_OPERATIONS = [
   'webhook.resolveConnection',
   'outbox.dispatch',
   'tasks.sweep',
+  'sla.sweep',
   'scheduler.listConnections',
   'auth.findUserByEmail',
   'auth.listMemberships',

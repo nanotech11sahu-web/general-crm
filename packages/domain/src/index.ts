@@ -11,3 +11,4 @@ export * from './connections';
 export * from './inbox';
 export * from './integrity';
 export * from './do';
+export * from './routing';
