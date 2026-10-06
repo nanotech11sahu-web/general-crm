@@ -16,3 +16,4 @@ export * from './messaging';
 export * from './storage';
 export * from './telephony';
 export * from './cadence';
+export * from './pulse';

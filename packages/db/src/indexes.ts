@@ -55,6 +55,7 @@ export const INDEXES: Idx[] = [
   { collection: 'messages', keys: { tenantId: 1, idempotencyKey: 1 }, options: { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } } },
   { collection: 'messages', keys: { tenantId: 1, providerMessageId: 1 }, options: { unique: true, partialFilterExpression: { providerMessageId: { $type: 'string' } } } },
   { collection: 'messagetemplates', keys: { tenantId: 1, channel: 1, name: 1, language: 1 }, options: { unique: true } },
+  { collection: 'pulsedailies', keys: { tenantId: 1, day: 1 }, options: { unique: true } },
   { collection: 'cadences', keys: { tenantId: 1, name: 1 }, options: { unique: true } },
   { collection: 'cadenceenrollments', keys: { tenantId: 1, leadId: 1, state: 1 } },
   { collection: 'cadenceenrollments', keys: { tenantId: 1, leadId: 1, dedupeKey: 1 }, options: { unique: true } },

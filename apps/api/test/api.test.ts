@@ -1087,3 +1087,78 @@ describe('cadences + first-touch API, message.in realtime (phase 4c)', () => {
     mine.close(); theirs.close();
   });
 });
+
+describe('pulse API (phase 5)', () => {
+  let owner: string; let tenantId: string; let mgr: string; let agent: { tok: string; id: string };
+  const leadIds: string[] = [];
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'pulse-owner@x.io', password: 'correct-horse-9', name: 'Pia', tenantName: 'Pulse Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    const mk = async (email: string, role: string) => {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email.split('@')[0], password: 'agent-pass-123' }).expect(201);
+      return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string };
+    };
+    mgr = (await mk('pulse-m@x.io', 'manager')).tok; agent = await mk('pulse-a@x.io', 'agent');
+    for (let i = 0; i < 3; i++) leadIds.push((await request(http).post('/v1/leads').set(auth(owner)).send({ name: `Pulse Lead ${i}`, contacts: [{ value: `98123${String(40000 + i)}` }] }).expect(201)).body.leadId);
+    // make them old and untouched so they leak
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    void runWithTenant;
+    // createdAt is immutable through the ORM: age the rows with the raw driver
+    const { toObjectId } = await import('@leaddesk/db');
+    await app.get(TENANT_DB).models.Lead.collection.updateMany({ tenantId: toObjectId(tenantId) }, { $set: { createdAt: new Date(Date.now() - 3 * 86400_000) } });
+  });
+
+  it('managers and owners read the Pulse endpoints; agents do not', async () => {
+    for (const p of ['kpis', 'team', 'leakage', 'sources', 'agents', 'insights', 'trend', 'settings']) {
+      await request(http).get(`/v1/pulse/${p}`).set(auth(mgr)).expect(200);
+      await request(http).get(`/v1/pulse/${p}`).set(auth(agent.tok)).expect(403);
+      await request(http).get(`/v1/pulse/${p}`).expect(401);
+    }
+    const k = (await request(http).get('/v1/pulse/kpis').query({ range: '7d' }).set(auth(owner)).expect(200)).body;
+    expect(k.counts.leads).toBe(3); expect(k).toHaveProperty('metrics.responseMedianS'); expect(k.previous).toBeDefined();
+    await request(http).get('/v1/pulse/kpis').query({ range: 'forever' }).set(auth(owner)).expect(400);
+    await request(http).get('/v1/pulse/leakage').query({ untouchedHours: '0' }).set(auth(owner)).expect(400);
+    await request(http).get('/v1/pulse/sources').query({ groupBy: 'nope' }).set(auth(owner)).expect(400);
+  });
+
+  it('leakage lists untouched leads and the ids feed the existing bulk reassign', async () => {
+    const lk = (await request(http).get('/v1/pulse/leakage').set(auth(mgr)).expect(200)).body;
+    expect(lk.untouched.count).toBe(3);
+    const ids = lk.untouched.leads.map((l: any) => l.leadId);
+    expect(JSON.stringify(lk)).not.toMatch(/98123\d{5}/); // no phone numbers in Pulse
+    const r = (await request(http).post('/v1/leads/bulk').set(auth(owner)).send({ ids, action: 'assign', ownerId: agent.id }).expect(201)).body;
+    expect(r.updated).toBe(3);
+    const team = (await request(http).get('/v1/pulse/team').set(auth(mgr)).expect(200)).body;
+    expect(team.members.find((m: any) => m.userId === agent.id)).toMatchObject({ awaitingFirstContact: 3 });
+    const ins = (await request(http).get('/v1/pulse/insights').set(auth(mgr)).expect(200)).body;
+    expect(ins.map((i: any) => i.id)).toContain('untouched');
+  });
+
+  it('agents get their own goal and the leaderboard; gamification can be turned off by an admin', async () => {
+    const me = (await request(http).get('/v1/pulse/me').set(auth(agent.tok)).expect(200)).body;
+    expect(me).toMatchObject({ gamification: true, goal: 10, done: 0 });
+    await request(http).put('/v1/pulse/settings').set(auth(mgr)).send({ gamification: false }).expect(403);
+    await request(http).put('/v1/pulse/settings').set(auth(owner)).send({ dailyGoal: 0 }).expect(400);
+    await request(http).put('/v1/pulse/settings').set(auth(owner)).send({ gamification: false }).expect(200);
+    expect((await request(http).get('/v1/pulse/me').set(auth(agent.tok)).expect(200)).body).toEqual({ gamification: false });
+    await request(http).put('/v1/pulse/settings').set(auth(owner)).send({ gamification: true }).expect(200);
+  });
+
+  it('CSV export is admin/owner only, audited, and formula-safe', async () => {
+    await request(http).get('/v1/pulse/export').query({ report: 'leakage' }).set(auth(mgr)).expect(403);
+    await request(http).get('/v1/pulse/export').query({ report: 'nope' }).set(auth(owner)).expect(400);
+    const r = await request(http).get('/v1/pulse/export').query({ report: 'leakage', range: '7d' }).set(auth(owner)).expect(200);
+    expect(r.headers['content-type']).toContain('text/csv'); expect(r.headers['content-disposition']).toContain('pulse-leakage-7d.csv');
+    expect(r.text.split('\n')[0]).toContain('bucket'); expect(r.text).toContain('untouched');
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    expect(await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.audit.find({ action: 'pulse.exported' }))).toHaveLength(1);
+  });
+
+  it('another tenant sees none of it', async () => {
+    const o2 = await signup('pulse-other');
+    const k = (await request(http).get('/v1/pulse/kpis').set(auth(o2.token)).expect(200)).body;
+    expect(k.counts.leads).toBe(0);
+    expect((await request(http).get('/v1/pulse/leakage').set(auth(o2.token)).expect(200)).body.untouched.count).toBe(0);
+  });
+});

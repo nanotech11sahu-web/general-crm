@@ -174,3 +174,11 @@ describe('CadenceSweeper', () => {
     expect(r).toMatchObject({ sent: 0, task: 0, stopped: 0 });
   });
 });
+
+describe('PulseSweeper', () => {
+  it('runs across tenants and is a no-op before any tenant\'s digest hour', async () => {
+    const { PulseSweeper } = await import('../src/pulse-sweeper');
+    const r = await new PulseSweeper(db, sys, () => new Date('2026-03-10T00:30:00Z')).run(); // 06:00 IST: before 08:00
+    expect(r).toEqual({ sent: 0 });
+  });
+});

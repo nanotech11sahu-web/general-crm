@@ -311,6 +311,13 @@ export function buildModels(conn: Connection) {
     status: { type: String, enum: ['draft', 'pending', 'approved', 'rejected'], default: 'draft' },
     rejectionReason: String,
   });
+  /** One document per tenant per local day: the five KPIs + leakage counts, written by the nightly rollup (powers trends and the digest). */
+  const PulseDaily = make(conn, 'PulseDaily', {
+    day: { type: String, required: true }, // YYYY-MM-DD in the tenant's timezone
+    kpis: Schema.Types.Mixed,
+    leakage: Schema.Types.Mixed,
+    counts: Schema.Types.Mixed,
+  });
   const Cadence = make(conn, 'Cadence', {
     name: { type: String, required: true },
     active: { type: Boolean, default: true },
@@ -424,7 +431,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

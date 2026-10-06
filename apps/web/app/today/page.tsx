@@ -7,6 +7,7 @@ import { OutcomeSheet, type Outcome, type SheetTarget, type Suggestion } from '.
 
 interface Item { kind: string; leadId: string; leadName: string; reason: string; taskId?: string; callSessionId?: string; dueAt?: string; suggestedAction: { type: string } }
 interface Queue { items: Item[]; counts: Record<string, number>; total: number; caughtUp: boolean }
+interface Goal { gamification: boolean; goal?: number; done?: number; streakDays?: number }
 interface Dialing { callSessionId: string; leadId: string; leadName: string; mode: 'cloud' | 'tap'; dialUri?: string }
 
 /** Hands the number to the phone's dialer. Overridable seam so browser tests (which have no dialer) can stub it. */
@@ -29,11 +30,12 @@ export default function Today() {
   const [dialing, setDialing] = useState<Dialing | null>(null); const [sheet, setSheet] = useState<SheetTarget | null>(null);
   const [suggest, setSuggest] = useState<(Suggestion & { leadId: string }) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [role, setRole] = useState<string>('agent'); const [goal, setGoal] = useState<Goal | null>(null);
   const dialingRef = useRef<Dialing | null>(null); dialingRef.current = dialing;
 
   const say = useCallback((m: string) => { setToast(m); setTimeout(() => setToast((t) => (t === m ? null : t)), 4000); }, []);
   const load = useCallback(async () => {
-    try { setQueue(await api<Queue>('/v1/do/queue')); setError(null); }
+    try { setQueue(await api<Queue>('/v1/do/queue')); setError(null); setGoal(await api<Goal>('/v1/pulse/me').catch(() => null)); }
     catch (e) { if (e instanceof ApiError && e.status === 401) router.replace('/login'); else setError('Could not load your leads. Retrying…'); }
   }, [router]);
 
@@ -45,6 +47,7 @@ export default function Today() {
       if (!alive) return;
       setReady(true);
       setOutcomes(await api<Outcome[]>('/v1/outcomes').catch(() => []));
+      setRole((await api<{ role: string }>('/v1/me').catch(() => ({ role: 'agent' }))).role);
       await load();
     })();
     return () => { alive = false; };
@@ -114,11 +117,15 @@ export default function Today() {
         <h1>Today</h1>
         <div className="row" style={{ alignItems: 'center' }}>
           <span className={`pill${live ? ' live' : ''}`} aria-label={live ? 'Live updates on' : 'Live updates off'}>{live ? '● live' : '○ offline'}</span>
+          {['owner', 'admin', 'manager'].includes(role) && <button onClick={() => router.push('/pulse')} style={{ minHeight: 36, padding: '0 12px' }}>Pulse</button>}
           <button onClick={async () => { await logout(); router.replace('/login'); }} style={{ minHeight: 36, padding: '0 12px' }}>Sign out</button>
         </div>
       </div>
 
       {error && <p className="err" role="alert">{error}</p>}
+      {goal?.gamification && goal.goal ? (
+        <p className="reason" data-testid="goal" aria-label="Daily goal">Today: {goal.done} / {goal.goal} actions{goal.streakDays ? ` · ${goal.streakDays}-day streak` : ''}</p>
+      ) : null}
 
       {suggest && (
         <div className="card" role="status">
