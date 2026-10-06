@@ -15,3 +15,4 @@ export * from './routing';
 export * from './messaging';
 export * from './storage';
 export * from './telephony';
+export * from './cadence';

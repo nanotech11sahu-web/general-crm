@@ -1016,3 +1016,74 @@ describe('telephony API (phase 4b, Exotel documented-shape fixtures)', () => {
     await request(http).get('/v1/calls').query({ leadId }).set(auth(o2.token)).expect(404);
   });
 });
+
+describe('cadences + first-touch API, message.in realtime (phase 4c)', () => {
+  let owner: string; let tenantId: string; let agent: { tok: string; id: string }; let other: { tok: string; id: string }; let leadId: string;
+  const openSse = async (token: string) => {
+    if (!(http.address && http.address())) await app.listen(0);
+    const port = (http.address() as any).port; const events: { type: string; data: any }[] = []; let req!: nodeHttp.ClientRequest;
+    await new Promise<void>((resolve, reject) => {
+      req = nodeHttp.request({ host: '127.0.0.1', port, path: '/v1/stream', headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } }, (res) => {
+        let buf = ''; res.setEncoding('utf8');
+        res.on('data', (c: string) => { buf += c; for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) { const blk = buf.slice(0, i); buf = buf.slice(i + 2); const ev: any = { type: 'message' }; for (const l of blk.split('\n')) { if (l.startsWith('event:')) ev.type = l.slice(6).trim(); else if (l.startsWith('data:')) { try { ev.data = JSON.parse(l.slice(5)); } catch { /* ping */ } } } events.push(ev); } });
+        resolve();
+      });
+      req.on('error', (e) => { if ((e as any).code !== 'ECONNRESET') reject(e); }); req.end();
+    });
+    return { events, close: () => req.destroy(), waitFor: async (type: string, ms = 4000) => { const t0 = Date.now(); for (;;) { const f = events.find((e) => e.type === type); if (f) return f; if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${type}`); await new Promise((r) => setTimeout(r, 25)); } } };
+  };
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'cad-owner@x.io', password: 'correct-horse-9', name: 'Cora', tenantName: 'Cad Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    const mk = async (email: string) => {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email.split('@')[0], password: 'agent-pass-123' }).expect(201);
+      return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string };
+    };
+    agent = await mk('cad-a1@x.io'); other = await mk('cad-a2@x.io');
+    leadId = (await request(http).post('/v1/leads').set(auth(agent.tok)).send({ name: 'Cadence Cat', contacts: [{ value: '9812377777' }] }).expect(201)).body.leadId;
+  });
+
+  it('definitions are admin-only and validated; first-touch needs an approved template', async () => {
+    const steps = [{ offsetMinutes: 0, action: 'task', taskType: 'call', note: 'Call and confirm site visit slot' }, { offsetMinutes: 1440, action: 'task', note: 'Check in again about the visit' }];
+    await request(http).post('/v1/cadences').set(auth(agent.tok)).send({ name: 'Visit nudges', steps }).expect(403);
+    await request(http).post('/v1/cadences').set(auth(owner)).send({ name: 'Bad', steps: [{ offsetMinutes: 0, action: 'task', note: 'x' }] }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_cadence'));
+    await request(http).post('/v1/cadences').set(auth(owner)).send({ name: 'Bad2', steps: [{ offsetMinutes: -5, action: 'task', note: 'Call and confirm' }] }).expect(400);
+    const c = (await request(http).post('/v1/cadences').set(auth(owner)).send({ name: 'Visit nudges', steps }).expect(201)).body;
+    await request(http).post('/v1/cadences').set(auth(owner)).send({ name: 'Visit nudges', steps }).expect(409);
+    expect((await request(http).get('/v1/cadences').set(auth(agent.tok)).expect(200)).body.map((x: any) => x.name)).toEqual(['Visit nudges']);
+    expect((await request(http).put(`/v1/cadences/${c._id}`).set(auth(owner)).send({ active: false }).expect(200)).body.active).toBe(false);
+    await request(http).post(`/v1/leads/${leadId}/cadences`).set(auth(agent.tok)).send({ cadenceId: c._id }).expect(409).expect((r) => expect(r.body.code).toBe('cadence_inactive'));
+    await request(http).put(`/v1/cadences/${c._id}`).set(auth(owner)).send({ active: true }).expect(200);
+
+    expect((await request(http).get('/v1/settings/first-touch').set(auth(owner)).expect(200)).body).toEqual({ enabled: false });
+    await request(http).put('/v1/settings/first-touch').set(auth(agent.tok)).send({ enabled: true, channel: 'whatsapp', templateId: 'x', delayMinutes: 0 }).expect(403);
+    await request(http).put('/v1/settings/first-touch').set(auth(owner)).send({ enabled: true, channel: 'whatsapp', templateId: '65f0000000000000000000ab', delayMinutes: 0 }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_first_touch'));
+    (globalThis as any).__cad = c;
+  });
+
+  it('agents enrol and stop cadences on leads they can see; other tenants and other agents cannot', async () => {
+    const c = (globalThis as any).__cad;
+    const en = (await request(http).post(`/v1/leads/${leadId}/cadences`).set(auth(agent.tok)).send({ cadenceId: c._id }).expect(201)).body;
+    expect(en.created).toBe(true);
+    const list = (await request(http).get(`/v1/leads/${leadId}/cadences`).set(auth(agent.tok)).expect(200)).body;
+    expect(list[0]).toMatchObject({ state: 'active', kind: 'cadence' });
+    await request(http).get(`/v1/leads/${leadId}/cadences`).set(auth(other.tok)).expect(403);
+    await request(http).delete(`/v1/enrollments/${en.enrollmentId}`).set(auth(other.tok)).expect(403);
+    const o2 = await signup('cad-other-tenant');
+    await request(http).get(`/v1/leads/${leadId}/cadences`).set(auth(o2.token)).expect(404);
+    await request(http).delete(`/v1/enrollments/${en.enrollmentId}`).set(auth(agent.tok)).expect(200);
+    expect((await request(http).get(`/v1/leads/${leadId}/cadences`).set(auth(agent.tok)).expect(200)).body[0]).toMatchObject({ state: 'stopped', stoppedReason: 'manual' });
+  });
+
+  it('message.in goes only to the lead owner over SSE', async () => {
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const mine = await openSse(agent.tok); const theirs = await openSse(other.tok);
+    await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.outbox.add('message.in', leadId, { channel: 'whatsapp', conversationId: '65f0000000000000000000cc', ownerId: agent.id }));
+    const ev = await mine.waitFor('message.in');
+    expect(ev.data).toMatchObject({ leadId, channel: 'whatsapp' }); expect(JSON.stringify(ev.data)).not.toContain('9812377777');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(theirs.events.find((e) => e.type === 'message.in')).toBeUndefined();
+    mine.close(); theirs.close();
+  });
+});

@@ -12,7 +12,7 @@ export default defineConfig({
   reporter: [['list']],
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
-  webServer: { command: 'npx next start -p 3400', url: 'http://127.0.0.1:3400/login', reuseExistingServer: false, timeout: 60_000, env: { API_URL: 'http://127.0.0.1:3300' } },
+  webServer: { command: 'npx next build && npx next start -p 3400', url: 'http://127.0.0.1:3400/login', reuseExistingServer: false, timeout: 240_000, env: { API_URL: 'http://127.0.0.1:3300' } },
   use: {
     baseURL: 'http://127.0.0.1:3400',
     viewport: { width: 390, height: 844 }, // a mid-range phone

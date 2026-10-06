@@ -1,5 +1,6 @@
 import { getContext, requireTenantId, runWithTenant, toObjectId, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
+import { CadenceEnroller } from './cadence-enroll';
 import { DbNotifier, type Notifier } from './integrity';
 import { LeadService } from './lead-service';
 import { PresenceService, SlaService } from './routing';
@@ -34,7 +35,7 @@ export type QueueKind = 'outcome_pending' | 'new_lead' | 'overdue_task' | 'due_t
 const TIER: Record<QueueKind, number> = { outcome_pending: 0, new_lead: 1, overdue_task: 2, due_task: 3, inbound: 4, stale: 5 };
 export interface QueueItem {
   kind: QueueKind; leadId: string; leadName: string; reason: string; dueAt?: Date; priority: number;
-  suggestedAction: { type: TaskType | 'log_outcome' }; taskId?: string; callSessionId?: string;
+  suggestedAction: { type: TaskType | 'log_outcome' }; taskId?: string; callSessionId?: string; conversationId?: string;
 }
 
 export class DoService {
@@ -194,6 +195,9 @@ export class DoService {
       if (next) created = await this.createTask({ leadId: i.leadId, next, outcomeId: outcome._id });
       if (i.statusId) await this.leads.changeStatus(i.leadId, i.statusId, { lostReasonId: i.lostReasonId });
       await this.r.outbox.add('outcome.logged', i.leadId, { outcomeId: String(outcome._id), kind: outcome.kind });
+      const cad = new CadenceEnroller(this.db, this.now);
+      if (outcome.kind === 'connected') await cad.stopFor(lead._id, 'connected_call');
+      await cad.autoEnroll(lead._id, { outcomeId: String(outcome._id) });
 
       let suggestedLostReasonId: string | undefined;
       if (outcome.suggestLostReasonLabel) suggestedLostReasonId = String(((await this.r.lostReasons.findOne({ label: outcome.suggestLostReasonLabel })) as any)?._id ?? '') || undefined;
@@ -252,7 +256,18 @@ export class DoService {
         : { kind: 'due_task', leadId: String(l._id), leadName: l.displayName, dueAt: t.dueAt, taskId: String(t._id), reason: `Due in ${ago(new Date(t.dueAt).getTime() - now.getTime())}: ${t.contextNote}`, priority: 1000 - (new Date(t.dueAt).getTime() - now.getTime()) / 60_000, suggestedAction: { type: t.type } });
     }
 
-    // E. unread inbound replies arrive with conversations in Phase 4.
+    // E. unread inbound replies on my leads (a customer is waiting): after tasks, before stale
+    const mine: any[] = await this.r.leads.find({ ownerId: me, deletedAt: null }, { projection: { _id: 1 }, limit: 5000 });
+    const unread: any[] = mine.length ? await this.r.conversations.find({ leadId: { $in: mine.map((l) => l._id) }, unreadCount: { $gt: 0 } }, { sort: { lastInboundAt: 1 }, limit: 100 }) : [];
+    await loadLeads(unread.map((c) => c.leadId));
+    const haveInbound = new Set<string>();
+    for (const c of unread) {
+      const l = leadCache.get(String(c.leadId));
+      if (!l || String(l.ownerId) !== userId || haveInbound.has(String(l._id))) continue;
+      haveInbound.add(String(l._id));
+      const waited = now.getTime() - new Date(c.lastInboundAt ?? c.lastMessageAt ?? now).getTime();
+      items.push({ kind: 'inbound', leadId: String(l._id), leadName: l.displayName, reason: `Replied on ${c.channel === 'sms' ? 'SMS' : 'WhatsApp'} ${ago(waited)} ago: "${String(c.lastMessagePreview ?? '').slice(0, 60)}"`, priority: waited / 60_000, suggestedAction: { type: c.channel === 'sms' ? 'sms' : 'whatsapp' }, conversationId: String(c._id) });
+    }
 
     // F. stale: open, owned, untouched for staleDays, nothing scheduled
     const cutoff = new Date(now.getTime() - s.staleDays * 86_400_000);

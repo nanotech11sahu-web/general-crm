@@ -8,7 +8,8 @@ import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { MongoClient } from 'mongodb';
-import { migrateUp } from '@leaddesk/db';
+import { createServer } from 'node:http';
+import { migrateUp, runWithTenant, TenantDbRouter } from '@leaddesk/db';
 
 const PORT = Number(process.env.E2E_API_PORT ?? 3300);
 const base = `http://127.0.0.1:${PORT}`;
@@ -43,6 +44,22 @@ async function main() {
   for (const [name, phone, city] of [['Anita Desai', '9812345670', 'Pune'], ['Rahul Mehta', '9812345671', 'Mumbai']]) {
     await j('/v1/leads', { method: 'POST', token: owner.accessToken, body: { name, city, contacts: [{ value: phone }] } });
   }
+
+  // Test-only seeding endpoint (browser tests cannot reach the real SMS/WhatsApp providers, so an inbound reply is planted directly).
+  const router = new TenantDbRouter(url); const db = await router.connect();
+  createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/inbound-reply') { res.statusCode = 404; res.end(); return; }
+    (async () => {
+      const lead = await j('/v1/leads', { method: 'POST', token: owner.accessToken, body: { name: 'Reply Rani', city: 'Nashik', contacts: [{ value: '9812345699' }] } });
+      await runWithTenant(owner.tenantId, async () => {
+        const conn: any = await db.repos.connections.create({ provider: 'sms-msg91', category: 'sms', name: 'E2E SMS', publicId: 'e2e-sms-pub', status: 'verified' });
+        const conv: any = await db.repos.conversations.create({ leadId: lead.leadId, channel: 'sms', connectionId: conn._id, externalThreadId: '+919812345699', lastInboundAt: new Date(), lastMessageAt: new Date(), lastMessagePreview: 'Can you call me after 6?', unreadCount: 1 });
+        await db.repos.messages.create({ conversationId: conv._id, leadId: lead.leadId, direction: 'in', channel: 'sms', body: 'Can you call me after 6?', providerMessageId: 'e2e-in-1', source: 'inbound', status: 'received' });
+        await db.repos.leads.updateOne({ _id: lead.leadId }, { $set: { firstContactedAt: new Date(), lastContactedAt: new Date() } });
+      });
+      res.end('{"ok":true}');
+    })().catch((e) => { res.statusCode = 500; res.end(String(e)); });
+  }).listen(PORT + 1, '127.0.0.1');
   console.log('READY ' + JSON.stringify({ api: base, agentId: me.userId }));
 }
 main().catch((e) => { console.error(e); process.exit(1); });

@@ -16,10 +16,10 @@ export async function refresh(): Promise<boolean> {
   return refreshing;
 }
 
-export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}, retry = true): Promise<T> {
+export async function api<T = any>(path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}, retry = true): Promise<T> {
   const res = await fetch(path, {
     method: init.method ?? 'GET', credentials: 'same-origin',
-    headers: { ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { ...(init.headers ?? {}), ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
   });
   if (res.status === 401 && retry && (await refresh())) return api<T>(path, init, false);

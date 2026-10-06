@@ -1,6 +1,7 @@
 import { MessageRejectedError, type CanonicalEvent, type ConnectorRegistry } from '@leaddesk/connectors-core';
 import type { KeyService } from '@leaddesk/crypto';
 import { getContext, requireTenantId, toObjectId, type TenantDb } from '@leaddesk/db';
+import { CadenceEnroller } from './cadence-enroll';
 import { ConnectionService } from './connections';
 import { DomainError, notFound } from './errors';
 import { LeadService } from './lead-service';
@@ -174,6 +175,7 @@ export class MessagingService {
     await this.activity(hit._id, 'message_in', { channel, preview: e.body.slice(0, 120), media: e.mediaType }, channel);
 
     const stop = isStopWord(e.body);
+    await new CadenceEnroller(this.db).stopFor(hit._id, stop ? 'opt_out' : 'reply');
     if (stop || isStartWord(e.body)) {
       await this.setOptOut(hit, e.from, channel, stop);
       await this.r.outbox.add(stop ? 'lead.opted_out' : 'lead.opted_in', String(hit._id), { channel });

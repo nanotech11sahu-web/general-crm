@@ -16,7 +16,7 @@ function openDialer(uri: string) {
 }
 
 const LIVE_TEXT: Record<string, string> = {
-  'lead.assigned': 'New lead assigned to you', 'task.created': 'Follow-up scheduled', 'task.due': 'A follow-up is due now',
+  'lead.assigned': 'New lead assigned to you', 'message.in': 'A lead replied', 'task.created': 'Follow-up scheduled', 'task.due': 'A follow-up is due now',
   'task.missed': 'A follow-up was missed', 'task.escalated': 'A missed follow-up was escalated', 'sla.breached': 'A lead was reassigned: claim window passed',
   'lead.unclaimed': 'A lead went unclaimed', 'connection.degraded': 'A lead source needs attention', 'connection.failing': 'A lead source is failing', 'connection.revoked': 'A lead source was disconnected',
 };
@@ -158,11 +158,14 @@ export default function Today() {
           <div className="name">{cur.leadName}</div>
           <p className="reason">{cur.reason}</p>
           <div className="row">
-            {cur.kind === 'outcome_pending' && cur.callSessionId
+            {cur.kind === 'inbound'
+              ? <><button className="primary big" onClick={() => router.push(`/lead/${cur.leadId}`)}>Reply</button><button onClick={() => call(cur)}>Call</button></>
+              : cur.kind === 'outcome_pending' && cur.callSessionId
               ? <button className="primary big" onClick={() => setSheet({ leadId: cur.leadId, leadName: cur.leadName, callSessionId: cur.callSessionId })}>Log outcome</button>
               : (<>
                   <button className="primary big" onClick={() => call(cur)}>Call</button>
                   {cur.kind === 'new_lead' && <button onClick={() => claim(cur)}>Claim</button>}
+                  <button onClick={() => router.push(`/lead/${cur.leadId}`)}>Message</button>
                 </>)}
           </div>
         </div>

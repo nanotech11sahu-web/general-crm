@@ -165,3 +165,12 @@ describe('SlaSweeper', () => {
     expect(r).toEqual({ reassigned: 0, escalated: 0 });
   });
 });
+
+describe('CadenceSweeper', () => {
+  it('is a no-op across tenants when nothing is due', async () => {
+    const { CadenceSweeper } = await import('../src/cadence-sweeper');
+    const { LocalKeyService } = await import('@leaddesk/crypto'); const { createRegistry } = await import('@leaddesk/connectors');
+    const r = await new CadenceSweeper(db, sys, new LocalKeyService(Buffer.alloc(32, 1)), createRegistry({} as any), () => new Date(Date.now() - 86400_000)).run();
+    expect(r).toMatchObject({ sent: 0, task: 0, stopped: 0 });
+  });
+});

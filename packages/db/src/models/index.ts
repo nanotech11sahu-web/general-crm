@@ -326,6 +326,7 @@ export function buildModels(conn: Connection) {
     stopOn: Schema.Types.Mixed,
     steps: [{ _id: false, runAt: Date, action: String, channel: String, templateId: ObjectId, taskType: String, note: String, done: Boolean, result: String }],
     stepIndex: { type: Number, default: 0 },
+    attempts: { type: Number, default: 0 }, // transport retries of the current step
     state: { type: String, enum: ['active', 'completed', 'stopped'], default: 'active' },
     nextRunAt: Date,
     stoppedReason: String,

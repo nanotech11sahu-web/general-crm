@@ -1,5 +1,6 @@
 import { getContext, newObjectId, requireTenantId, toObjectId, withTransaction, type TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
+import { CadenceEnroller } from './cadence-enroll';
 import { RoutingService } from './routing';
 import { cleanName, nameTokens, normalizeContacts, phoneSearchKeys, type NormContact, type RawContact } from './normalize';
 
@@ -46,7 +47,8 @@ export function customFieldErrors(defs: any[], custom: Record<string, unknown>):
 
 export class LeadService {
   private readonly routing: RoutingService;
-  constructor(private readonly db: TenantDb) { this.routing = new RoutingService(db); }
+  private readonly cadences: CadenceEnroller;
+  constructor(private readonly db: TenantDb) { this.routing = new RoutingService(db); this.cadences = new CadenceEnroller(db); }
   private get r() { return this.db.repos; }
   private actor() { return getContext()?.userId; }
 
@@ -107,6 +109,7 @@ export class LeadService {
     await this.activity(lead._id, 'lead_created', { source: input.source, campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName, externalRef: input.externalRef, answers: input.raw && Object.keys(input.raw).length ? input.raw : undefined });
     await this.r.outbox.add('lead.created', String(lead._id), { sourceId: sourceId ? String(sourceId) : null });
     if (!input.ownerId) await this.routing.routeNew(lead._id); // no-op until the tenant configures routing
+    await this.cadences.enrollFirstTouch(lead, input.source?.kind); // no-op unless the tenant turned first-touch on
     return { outcome: 'created', leadId: String(lead._id) };
   }
 
@@ -189,6 +192,8 @@ export class LeadService {
     await this.r.leads.updateOne({ _id: lead._id }, { $set: { statusId: status._id, lostReasonId: status.kind === 'lost' ? toObjectId(o.lostReasonId!) : null } });
     await this.activity(lead._id, 'status_changed', { from: lead.statusId, to: status._id, kind: status.kind, lostReasonId: o.lostReasonId });
     await this.r.outbox.add('lead.status_changed', id, { statusId, kind: status.kind });
+    await this.cadences.stopFor(lead._id, 'status_change'); // a human moved the lead: automation steps aside
+    await this.cadences.autoEnroll(lead._id, { statusId });
     return this.get(id);
   }
 
