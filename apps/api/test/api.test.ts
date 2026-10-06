@@ -5,6 +5,7 @@ import { MongoClient } from 'mongodb';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
+import nodeHttp from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrateUp } from '@leaddesk/db';
 
@@ -19,6 +20,7 @@ beforeAll(async () => {
   process.env.LOCAL_KEK_BASE64 = randomBytes(32).toString('base64');
   Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test' });
   delete process.env.PUBLIC_APP_URL;
+  process.env.REALTIME_POLL_MS = '80';
   const c = await MongoClient.connect(process.env.MONGO_URL); await migrateUp(c.db()); await c.close();
   const { AppModule } = await import('../src/app.module');
   const { configureApp } = await import('../src/setup');
@@ -647,5 +649,127 @@ describe('routing + SLA API (phase 3b)', () => {
       expect((await request(http).get(`/v1/leads/${id}`).set(auth(owner)).expect(200)).body.ownerId).not.toBe(agents[1].id); // on leave
     }
     await request(http).patch('/v1/users/65f0000000000000000000dd/profile').set(auth(owner)).send({ skills: [] }).expect(404);
+  });
+});
+
+describe('realtime SSE stream (phase 3c)', () => {
+  interface Sse { events: { id?: string; type: string; data: any }[]; close: () => void; status: number; wait: (type: string, pred?: (d: any) => boolean, ms?: number) => Promise<any> }
+  let port: number;
+  const openStream = (token: string | null, lastEventId?: string) => new Promise<Sse>((resolve, reject) => {
+    const events: Sse['events'] = [];
+    const req = nodeHttp.request({ host: '127.0.0.1', port, path: '/v1/stream', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}), Accept: 'text/event-stream' } }, (res) => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        buf += chunk;
+        for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          const ev: any = { type: 'message', data: undefined };
+          for (const line of block.split('\n')) { if (line.startsWith('id:')) ev.id = line.slice(3).trim(); else if (line.startsWith('event:')) ev.type = line.slice(6).trim(); else if (line.startsWith('data:')) { try { ev.data = JSON.parse(line.slice(5)); } catch { ev.data = line.slice(5); } } }
+          events.push(ev);
+        }
+      });
+      resolve({ events, status: res.statusCode ?? 0, close: () => { req.destroy(); res.destroy(); },
+        wait: async (type, pred = () => true, ms = 4000) => { const t0 = Date.now(); for (;;) { const f = events.find((e) => e.type === type && pred(e.data)); if (f) return f; if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${type}; got ${events.map((e) => e.type).join(',')}`); await new Promise((r) => setTimeout(r, 25)); } } });
+    });
+    req.on('error', (e) => { if ((e as any).code !== 'ECONNRESET') reject(e); });
+    req.end();
+  });
+  const open: Sse[] = [];
+  const stream = async (token: string | null, last?: string) => { const s = await openStream(token, last); open.push(s); return s; };
+  let owner: string; let tenantId: string; const ag: { tok: string; id: string }[] = [];
+
+  beforeAll(async () => {
+    const server = await app.listen(0); port = (server.address() as any).port;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'rt-owner@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'RT Co' }).expect(201);
+    owner = o.body.accessToken; tenantId = o.body.tenantId;
+    for (const n of [1, 2]) {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: `rt-a${n}@x.io`, role: 'agent' }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: `a${n}`, password: 'agent-pass-123' }).expect(201);
+      ag.push({ tok: r.body.accessToken, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId });
+      await request(http).put('/v1/me/presence').set(auth(r.body.accessToken)).send({ state: 'online' }).expect(200);
+    }
+    await request(http).put('/v1/rules/assignment').set(auth(owner)).send({ rules: [{ name: 'a1 only', action: { kind: 'specific_user', userId: ag[0].id } }] }).expect(200);
+    await request(http).put('/v1/sla').set(auth(owner)).send({ policies: [{ name: 'D', claimSeconds: 120, firstContactSeconds: 900 }] }).expect(200);
+  });
+  afterAll(() => { open.forEach((s) => s.close()); });
+
+  it('requires authentication', async () => {
+    const s = await openStream(null); expect(s.status).toBe(401); s.close();
+  });
+
+  it('delivers lead.assigned (with claim timer) only to the assignee; no contact details leak; teammates and the admin do not get it', async () => {
+    const a1 = await stream(ag[0].tok); const a2 = await stream(ag[1].tok); const adm = await stream(owner);
+    expect(a1.status).toBe(200);
+    await a1.wait('ready');
+    const id = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Live Lead', contacts: [{ value: '9855500001' }] }).expect(201)).body.leadId;
+    const ev = await a1.wait('lead.assigned', (d) => d.leadId === id);
+    expect(ev.data.claimDueAt).toBeTruthy();
+    expect(JSON.stringify(a1.events)).not.toContain('9855500001');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(a2.events.some((e) => e.type === 'lead.assigned')).toBe(false);
+    expect(adm.events.some((e) => e.type === 'lead.assigned')).toBe(false);
+    a1.close(); a2.close(); adm.close();
+  });
+
+  it('task.created reaches the assignee; task.due fires when it becomes due; managers get missed/escalated', async () => {
+    const a1 = await stream(ag[0].tok); const adm = await stream(owner); await a1.wait('ready'); await adm.wait('ready');
+    const lead = (await request(http).post('/v1/leads').set(auth(ag[0].tok)).send({ name: 'Due Lead', contacts: [{ value: '9855500002' }] }).expect(201)).body.leadId;
+    const t = (await request(http).post('/v1/tasks').set(auth(ag[0].tok)).send({ leadId: lead, dueAt: new Date(Date.now() + 3600_000).toISOString(), contextNote: 'Call about the documents' }).expect(201)).body;
+    await a1.wait('task.created', (d) => d.taskId === t._id);
+    // a task whose due time passes while connected
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const db = app.get(TENANT_DB);
+    const soon: any = await runWithTenant(tenantId, () => db.repos.tasks.create({ leadId: lead, assigneeId: ag[0].id, dueAt: new Date(Date.now() + 600), contextNote: 'Due very soon task', status: 'open' }));
+    await a1.wait('task.due', (d) => d.taskId === String(soon._id));
+    // missed/escalated go to managers+, not to the plain agent
+    await runWithTenant(tenantId, async () => { await db.repos.outbox.add('task.escalated', 'x1', {}); await db.repos.outbox.add('task.missed', 'x2', { assigneeId: ag[1].id, leadId: lead }); });
+    await adm.wait('task.escalated'); await adm.wait('task.missed');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a1.events.some((e) => e.type === 'task.escalated' || (e.type === 'task.missed' && e.data.taskId === 'x2'))).toBe(false);
+    a1.close(); adm.close();
+  });
+
+  it('connection alerts (notifications) go to admins only', async () => {
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { DbNotifier } = await import('@leaddesk/domain'); const { runWithTenant } = await import('@leaddesk/db');
+    const db = app.get(TENANT_DB);
+    const a1 = await stream(ag[0].tok); const adm = await stream(owner); await a1.wait('ready'); await adm.wait('ready');
+    await runWithTenant(tenantId, () => new DbNotifier(db).notify({ kind: 'connection.degraded', audience: 'admins', payload: { name: 'Meta', reconnectPath: '/v1/connections/x/reconnect' }, dedupeKey: `rt-${Date.now()}` }));
+    const ev = await adm.wait('connection.degraded');
+    expect(ev.data.reconnectPath).toBe('/v1/connections/x/reconnect');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a1.events.some((e) => e.type === 'connection.degraded')).toBe(false);
+    a1.close(); adm.close();
+  });
+
+  it('never leaks across tenants', async () => {
+    const other = await signup('rt-other');
+    const mine = await stream(other.token); await mine.wait('ready');
+    await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Not yours', contacts: [{ value: '9855500003' }] }).expect(201);
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    await runWithTenant(tenantId, () => app.get(TENANT_DB).repos.outbox.add('task.escalated', 'leak', {}));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(mine.events.filter((e) => e.type !== 'ready')).toHaveLength(0);
+    mine.close();
+  });
+
+  it('reconnecting with Last-Event-ID replays what was missed; the per-user stream cap is enforced', async () => {
+    const first = await stream(ag[0].tok); await first.wait('ready');
+    const l1 = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Before', contacts: [{ value: '9855500004' }] }).expect(201)).body.leadId;
+    const seen = await first.wait('lead.assigned', (d) => d.leadId === l1);
+    first.close();
+    await new Promise((r) => setTimeout(r, 200));
+    const l2 = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'While away', contacts: [{ value: '9855500005' }] }).expect(201)).body.leadId; // arrives while disconnected
+    await new Promise((r) => setTimeout(r, 300));
+    const back = await stream(ag[0].tok, seen.id);
+    await back.wait('lead.assigned', (d) => d.leadId === l2);
+    expect(back.events.some((e) => e.type === 'lead.assigned' && e.data.leadId === l1)).toBe(false); // nothing is replayed twice
+    back.close();
+    const many: Sse[] = [];
+    for (let i = 0; i < 5; i++) many.push(await stream(ag[1].tok));
+    const sixth = await openStream(ag[1].tok); open.push(sixth);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(sixth.events.some((e) => e.type === 'ready')).toBe(false);
+    many.forEach((m) => m.close()); sixth.close();
   });
 });
