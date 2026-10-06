@@ -1700,3 +1700,22 @@ describe('call review API (phase 9: transcription + QA, opt-in)', () => {
     void audit; expect(await runWithTenant(tid, () => db.repos.audit.count({ action: 'ai.transcript_viewed' }))).toBe(1);
   });
 });
+
+describe('qualification assistant API (phase 9)', () => {
+  it('config is admin-only and validated, switching on needs a checklist, and anyone who can see a lead can stop it', async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'ap-owner@x.io', password: 'correct-horse-9', name: 'Ola', tenantName: 'AP Co' }).expect(201);
+    const owner = o.body.accessToken;
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email: 'ap-agent@x.io', role: 'agent' }).expect(201);
+    const agent = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'ap-agent', password: 'agent-pass-123' }).expect(201)).body.accessToken as string;
+    expect((await request(http).get('/v1/ai/autopilot').set(auth(agent)).expect(200)).body).toMatchObject({ checklist: [], maxMessages: 4, graceSeconds: 120 });
+    await request(http).put('/v1/ai/autopilot').set(auth(agent)).send({ maxMessages: 2 }).expect(403);
+    await request(http).put('/v1/ai/autopilot').set(auth(owner)).send({ checklist: [{ key: 'Bad Key', question: 'x?' }] }).expect(422);
+    await request(http).put('/v1/ai/autopilot').set(auth(owner)).send({ graceSeconds: 5 }).expect(422);
+    const cfg = (await request(http).put('/v1/ai/autopilot').set(auth(owner)).send({ checklist: [{ key: 'budget', question: 'What is your budget?' }], maxMessages: 3 }).expect(200)).body;
+    expect(cfg).toMatchObject({ checklist: [{ key: 'budget' }], maxMessages: 3 });
+    const lead = (await request(http).post('/v1/leads').set(auth(agent)).send({ name: 'Stop Me', contacts: [{ value: '9812355501' }] }).expect(201)).body.leadId;
+    await request(http).post(`/v1/ai/leads/${lead}/autopilot/stop`).set(auth(agent)).expect(201).expect((r) => expect(r.body.ok).toBe(true));
+    expect((await request(http).get(`/v1/leads/${lead}`).set(auth(agent)).expect(200)).body.ai.autopilot).toMatchObject({ state: 'handed_off', reason: 'human_stopped' });
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ features: { autopilot: 1 } }).expect(422); // no AI provider connected yet
+  });
+});

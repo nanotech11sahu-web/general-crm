@@ -1,8 +1,9 @@
 import { Body, Controller, Delete, Get, Inject, Injectable, Module, Param, Post, Put, Query } from '@nestjs/common';
-import { IsArray, IsBoolean, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ValidateNested, IsArray, IsBoolean, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import type { ConnectorRegistry } from '@leaddesk/connectors-core';
 import type { KeyService } from '@leaddesk/crypto';
-import { AiService, DomainError, presentLead } from '@leaddesk/domain';
+import { AiService, AutopilotService, DomainError, MessagingService, presentLead } from '@leaddesk/domain';
 import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
 import type { TenantDb } from '@leaddesk/db';
 import type { ObjectStore } from '@leaddesk/domain';
@@ -23,6 +24,13 @@ class AiSettingsDto {
   @IsOptional() @IsInt() @Min(7) @Max(90) revivalDays?: number;
   @IsOptional() @IsBoolean() callAnalysisConsent?: boolean;
 }
+class ChecklistItemDto { @IsString() @MaxLength(25) key!: string; @IsString() @MaxLength(160) question!: string }
+class AutopilotDto {
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ChecklistItemDto) checklist?: ChecklistItemDto[];
+  @IsOptional() @IsInt() maxMessages?: number;
+  @IsOptional() @IsInt() graceSeconds?: number;
+  @IsOptional() @IsString() @MaxLength(200) holdingMessage?: string;
+}
 class DraftDto { @IsOptional() @IsString() @MaxLength(300) instruction?: string }
 class KbDto { @IsString() @MaxLength(120) title!: string; @IsString() @MaxLength(2000) text!: string; @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[]; @IsOptional() @IsBoolean() active?: boolean }
 class NoteDto { @IsString() @MinLength(3) @MaxLength(1500) note!: string }
@@ -30,9 +38,10 @@ class SearchDto { @IsString() @MinLength(2) @MaxLength(300) q!: string }
 
 @Injectable()
 export class AiFacade {
-  readonly svc: AiService;
+  readonly svc: AiService; readonly autopilot: AutopilotService;
   constructor(@Inject(TENANT_DB) readonly db: TenantDb, @Inject(KEY_SERVICE) keys: KeyService, @Inject(REGISTRY) registry: ConnectorRegistry, @Inject(OBJECT_STORE) store: ObjectStore, readonly scope: ScopeService, readonly audit: AuditService) {
     this.svc = new AiService(db, keys, registry, { store });
+    this.autopilot = new AutopilotService(db, this.svc, new MessagingService(db, keys, registry));
   }
   async visibleLead(u: AuthUser, id: string) {
     const l: any = await this.db.repos.leads.findOne({ _id: id, deletedAt: null });
@@ -94,6 +103,14 @@ export class AiController {
   async duplicates(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.findDuplicates(id); }
   @Post('leads/:id/revive') @RequirePermission('leads.write')
   async revive(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.revive(id); }
+
+  // ---- qualification assistant: configured by admins, stoppable by anyone who can see the lead ----
+  @Get('autopilot') @RequirePermission('leads.read')
+  async autopilotConfig() { return (await this.f.svc.settings()).autopilot; }
+  @Put('autopilot') @RequirePermission('tenant.manage')
+  async setAutopilot(@Body() b: AutopilotDto) { const c = await this.f.svc.updateAutopilot(b); await this.f.audit.record({ action: 'ai.autopilot_configured', entity: 'tenant', meta: { items: c.checklist.length } }); return c; }
+  @Post('leads/:id/autopilot/stop') @RequirePermission('leads.write')
+  async stopAutopilot(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.autopilot.stop(id); }
 
   // ---- call review (opt-in): managers only, because it exposes what was said on a call ----
   @Get('call-reviews') @RequirePermission('calls.listen')

@@ -5,10 +5,11 @@ import { ApiError, api, refresh } from '../../lib/api';
 
 const FEATURES: [string, string, boolean][] = [
   ['assessment', 'New-lead assessment', true], ['summary', 'Lead summaries', true], ['autofill', 'Auto-fill fields', true], ['scoring', 'Lead scoring', true],
-  ['reply_draft', 'Draft replies (you send them)', false], ['duplicate', 'Duplicate detection', false], ['inbound_intel', 'Read every new reply (runs in the background)', true], ['revival', 'Suggest re-engaging quiet leads (runs in the background)', false], ['insight', 'AI-written line in the daily digest (numbers only)', false], ['call_qa', 'Call transcription and review', false], ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
+  ['reply_draft', 'Draft replies (you send them)', false], ['duplicate', 'Duplicate detection', false], ['inbound_intel', 'Read every new reply (runs in the background)', true], ['revival', 'Suggest re-engaging quiet leads (runs in the background)', false], ['autopilot', 'Qualification assistant: answers new WhatsApp chats and asks your checklist questions', false], ['insight', 'AI-written line in the daily digest (numbers only)', false], ['call_qa', 'Call transcription and review', false], ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
 ];
 interface Settings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<string, number>; scoringGuidance?: string; revivalDays?: number; callAnalysisConsent?: boolean }
 interface Review { callId: string; leadId: string; startedAt: string; durationS?: number; status: string; score: number | null; summary: string | null; flags: string[]; coaching: string | null }
+interface Auto { checklist: { key: string; question: string }[]; maxMessages: number; graceSeconds: number; holdingMessage: string }
 interface Kb { _id: string; title: string; text: string; active: boolean }
 interface Usage { used: number; cap: number; features: { feature: string; requests: number; failures: number }[] }
 
@@ -16,9 +17,9 @@ interface Usage { used: number; cap: number; features: { feature: string; reques
 export default function AiSettings() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [s, setS] = useState<Settings | null>(null); const [u, setU] = useState<Usage | null>(null); const [msg, setMsg] = useState<string | null>(null); const [forbidden, setForbidden] = useState(false);
-  const [reviews, setReviews] = useState<Review[]>([]); const [kb, setKb] = useState<Kb[]>([]); const [nk, setNk] = useState({ title: '', text: '' });
+  const [auto, setAuto] = useState<Auto | null>(null); const [reviews, setReviews] = useState<Review[]>([]); const [kb, setKb] = useState<Kb[]>([]); const [nk, setNk] = useState({ title: '', text: '' });
   const load = useCallback(async () => {
-    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); setKb(await api<Kb[]>('/v1/ai/knowledge').catch(() => [])); setReviews(await api<Review[]>('/v1/ai/call-reviews').catch(() => [])); }
+    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); setKb(await api<Kb[]>('/v1/ai/knowledge').catch(() => [])); setReviews(await api<Review[]>('/v1/ai/call-reviews').catch(() => [])); setAuto(await api<Auto>('/v1/ai/autopilot').catch(() => null)); }
     catch (e) { if (e instanceof ApiError && e.status === 401) router.replace('/login'); }
   }, [router]);
   useEffect(() => { (async () => { if (!(await refresh())) { router.replace('/login'); return; } const me = await api<{ role: string }>('/v1/me'); if (!['owner', 'admin'].includes(me.role)) setForbidden(true); setReady(true); await load(); })(); }, [router, load]);
@@ -58,6 +59,14 @@ export default function AiSettings() {
         <label htmlFor="rev">Call a lead “quiet” after (days)</label>
         <input id="rev" type="number" min={7} max={90} defaultValue={s.revivalDays ?? 14} onBlur={(e) => { const n = Number(e.target.value); if (n !== s.revivalDays) void save({ revivalDays: n }); }} />
       </section>
+      {auto && (<section className="card" data-testid="autopilot"><h2>Qualification assistant</h2>
+        <p className="reason">When a lead writes to you on WhatsApp and nobody replies within {Math.round(auto.graceSeconds / 60 * 10) / 10} min, the assistant answers from your knowledge base, asks the questions below one by one, then hands over with a task for the owner. It never starts a chat, never talks price, hands off on complaints or requests for a person, and stops the moment someone on your team replies. Switch it on under Features once a checklist exists.</p>
+        {auto.checklist.map((c, i) => (<div key={i} className="row" style={{ marginBottom: 6 }}><input aria-label={`Checklist key ${i + 1}`} value={c.key} onChange={(e) => setAuto({ ...auto, checklist: auto.checklist.map((x, k) => (k === i ? { ...x, key: e.target.value } : x)) })} style={{ flex: 1 }} /><input aria-label={`Checklist question ${i + 1}`} value={c.question} onChange={(e) => setAuto({ ...auto, checklist: auto.checklist.map((x, k) => (k === i ? { ...x, question: e.target.value } : x)) })} style={{ flex: 3 }} /><button style={{ minHeight: 40, padding: '0 10px' }} onClick={() => setAuto({ ...auto, checklist: auto.checklist.filter((_, k) => k !== i) })}>Remove</button></div>))}
+        <div className="row"><button onClick={() => setAuto({ ...auto, checklist: [...auto.checklist, { key: '', question: '' }] })} disabled={auto.checklist.length >= 6}>Add question</button></div>
+        <label htmlFor="apmax">Most messages it may send per chat</label><input id="apmax" type="number" min={1} max={6} value={auto.maxMessages} onChange={(e) => setAuto({ ...auto, maxMessages: Number(e.target.value) })} />
+        <label htmlFor="apgrace">Wait for a person first (seconds)</label><input id="apgrace" type="number" min={30} max={1800} value={auto.graceSeconds} onChange={(e) => setAuto({ ...auto, graceSeconds: Number(e.target.value) })} />
+        <label htmlFor="aphold">Message when it hands over</label><input id="aphold" maxLength={200} value={auto.holdingMessage} onChange={(e) => setAuto({ ...auto, holdingMessage: e.target.value })} />
+        <div className="row" style={{ marginTop: 12 }}><button className="primary" onClick={async () => { try { setAuto(await api<Auto>('/v1/ai/autopilot', { method: 'PUT', body: auto })); setMsg('Saved'); } catch (e) { setMsg(e instanceof ApiError ? `${e.message}${e.details ? ': ' + Object.values(e.details).join('; ') : ''}` : 'Could not save'); } }}>Save</button></div></section>)}
       {reviews.length > 0 && (<section className="card" data-testid="call-reviews"><h2>Call reviews</h2>
         <ul className="list">{reviews.map((r) => (<li key={r.callId} style={{ display: 'block' }}><b>{r.score !== null ? `${r.score}/100` : r.status}</b> · {new Date(r.startedAt).toLocaleString()}{r.durationS ? ` · ${Math.round(r.durationS / 60)} min` : ''}<br /><span className="reason">{r.summary}</span>{r.coaching && <><br /><span className="reason">Coaching: {r.coaching}</span></>}{r.flags.length > 0 && <p className="err">{r.flags.join(' · ')}</p>}
           <button style={{ minHeight: 32, padding: '0 10px', marginTop: 6 }} onClick={async () => { const a = await api<{ transcript?: string }>(`/v1/ai/calls/${r.callId}/analysis`); window.alert(a.transcript ?? 'The transcript has expired with the recording.'); }}>Read transcript</button></li>))}</ul></section>)}

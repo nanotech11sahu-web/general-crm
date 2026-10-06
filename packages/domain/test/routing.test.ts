@@ -88,7 +88,7 @@ describe('routing engine', () => {
 
   it('presence, working hours, leave, capacity, language and skills are respected; relaxes only with an explanation', async () => {
     const T = await mkTenant('filters');
-    const wh = { days: { mon: [['09:00', '18:00']], tue: [['09:00', '18:00']], wed: [['09:00', '18:00']], thu: [['09:00', '18:00']], fri: [['09:00', '18:00']], sat: [['09:00', '18:00']], sun: [['09:00', '18:00']] } };
+    const wh = { days: { mon: [['00:00', '23:59']], tue: [['00:00', '23:59']], wed: [['00:00', '23:59']], thu: [['00:00', '23:59']], fri: [['00:00', '23:59']], sat: [['00:00', '23:59']], sun: [['00:00', '23:59']] } };
     const never = { days: {} };
     const offline = await mkAgent(T, 'Offline');
     const afterHours = await mkAgent(T, 'AfterHours', { workingHours: never });

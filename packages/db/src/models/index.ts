@@ -294,7 +294,7 @@ export function buildModels(conn: Connection) {
     channel: String,
     body: String,
     templateId: ObjectId,
-    source: { type: String, enum: ['agent', 'cadence', 'first_touch', 'inbound', 'system'], default: 'agent' },
+    source: { type: String, enum: ['agent', 'cadence', 'first_touch', 'inbound', 'system', 'ai'], default: 'agent' },
     media: Schema.Types.Mixed,
     providerMessageId: String,
     status: { type: String, enum: ['queued', 'sent', 'delivered', 'read', 'failed', 'received'], default: 'queued' },

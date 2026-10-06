@@ -9,7 +9,7 @@ import { PrivacyService } from './privacy';
 import { inTimeWindow } from './routing';
 
 export type Channel = 'whatsapp' | 'sms' | 'email';
-export type MsgSource = 'agent' | 'cadence' | 'first_touch' | 'inbound' | 'system';
+export type MsgSource = 'agent' | 'cadence' | 'first_touch' | 'inbound' | 'system' | 'ai';
 const WINDOW_MS = 24 * 3600_000;
 const RANK: Record<string, number> = { queued: 0, sent: 1, delivered: 2, read: 3 };
 
@@ -89,8 +89,10 @@ export class MessagingService {
     if (existing && existing.status !== 'queued') return { message: existing, duplicate: true };
 
     const s = await this.settings();
-    if (source === 'cadence' || source === 'first_touch') {
+    if (source === 'cadence' || source === 'first_touch' || source === 'ai') {
       if (s.quietHours && inTimeWindow(this.now(), s.tz, s.quietHours.from, s.quietHours.to)) throw new DomainError('quiet_hours', 'Automated messages are paused during quiet hours', { until: s.quietHours.to }, 409);
+    }
+    if (source === 'cadence' || source === 'first_touch') {
       const since = new Date(this.now().getTime() - 24 * 3600_000);
       const sent = await this.r.messages.count({ leadId: lead._id, direction: 'out', source: { $in: ['cadence', 'first_touch'] }, createdAt: { $gte: since }, status: { $ne: 'failed' } });
       if (sent >= s.autoPerLeadPerDay) throw new DomainError('frequency_cap', `At most ${s.autoPerLeadPerDay} automated messages per lead per day`, undefined, 429);
