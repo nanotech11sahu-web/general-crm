@@ -4,6 +4,7 @@ import * as argon2 from 'argon2';
 import { createHash, randomBytes } from 'node:crypto';
 import { runAsSystem, runWithTenant, withTransaction, type SystemOps, type TenantDb } from '@leaddesk/db';
 import type { Role } from '@leaddesk/shared';
+import { seedPreset } from '@leaddesk/domain';
 import { AuditService } from '../audit/audit.service';
 import { SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
 
@@ -34,6 +35,7 @@ export class AuthService {
     const tenantId = String(tenant._id);
     return runWithTenant(tenantId, async () => {
       const m = await this.db.repos.memberships.create({ userId: user._id, role: 'owner' });
+      await seedPreset(this.db.repos, i.industryPreset ?? 'generic');
       await this.audit.record({ action: 'tenant.signup', entity: 'tenant', entityId: tenantId });
       return this.issue(String(user._id), tenantId, 'owner', String(m._id));
     });

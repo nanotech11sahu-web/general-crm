@@ -75,21 +75,104 @@ export function buildModels(conn: Connection) {
   const Lead = make(conn, 'Lead', {
     displayName: { type: String, required: true },
     statusId: ObjectId,
+    lostReasonId: ObjectId,
     ownerId: ObjectId,
     teamId: ObjectId,
     sourceId: ObjectId,
+    campaign: String, adSet: String, ad: String, formName: String,
     externalRef: String,
+    metaLeadId: String,
+    score: Number,
+    language: String,
+    city: String,
+    budgetText: String,
     contacts: [{
       _id: false,
       kind: { type: String, enum: ['phone', 'email'], required: true },
       valueRaw: String,
       valueNorm: { type: String, required: true },
       isPrimary: Boolean,
+      verified: Boolean,
+      optedOutChannels: [String],
     }],
+    phoneNorms: [String], // denormalised for search: full E.164, last-10 digits and prefixes
     tags: [String],
     custom: { type: Schema.Types.Mixed, default: {} },
+    consent: { type: Schema.Types.Mixed, default: {} },
+    firstContactedAt: Date,
+    lastContactedAt: Date,
+    lastEnquiryAt: Date,
     nextActionAt: Date,
+    assignedAt: Date,
+    claimedAt: Date,
+    mergedInto: ObjectId,
     deletedAt: Date,
+  });
+
+  const LeadStatus = make(conn, 'LeadStatus', {
+    name: { type: String, required: true },
+    kind: { type: String, enum: ['open', 'won', 'lost'], required: true },
+    position: { type: Number, required: true },
+    color: String,
+    requiresFields: [String],
+    autoActions: Schema.Types.Mixed,
+  });
+  const LostReason = make(conn, 'LostReason', { label: { type: String, required: true } });
+  const LeadSource = make(conn, 'LeadSource', {
+    kind: { type: String, required: true },
+    name: { type: String, required: true },
+    connectionId: ObjectId,
+  });
+  const CustomFieldDef = make(conn, 'CustomFieldDef', {
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    type: { type: String, enum: ['text', 'number', 'select', 'date', 'boolean'], required: true },
+    options: [String],
+    requiredInStatusIds: [ObjectId],
+    showInList: Boolean,
+  });
+  /** Append-only timeline. */
+  const Activity = make(conn, 'Activity', {
+    leadId: { type: ObjectId, required: true },
+    type: { type: String, required: true },
+    actorId: ObjectId,
+    channel: String,
+    payload: Schema.Types.Mixed,
+    occurredAt: { type: Date, default: Date.now },
+  }, { timestamps: false });
+  const LeadMerge = make(conn, 'LeadMerge', {
+    winnerId: { type: ObjectId, required: true },
+    loserId: { type: ObjectId, required: true },
+    mergedBy: ObjectId,
+    snapshot: Schema.Types.Mixed,
+    undoneAt: Date,
+  });
+  const SavedView = make(conn, 'SavedView', {
+    ownerId: ObjectId,
+    name: { type: String, required: true },
+    filter: Schema.Types.Mixed,
+    sort: Schema.Types.Mixed,
+    shared: { type: Boolean, default: false },
+  });
+  const ImportJob = make(conn, 'ImportJob', {
+    filename: String,
+    fileKey: String,
+    status: { type: String, enum: ['uploaded', 'mapped', 'dry_run_done', 'running', 'done', 'failed'], default: 'uploaded' },
+    headers: [String],
+    rows: Schema.Types.Mixed, // parsed rows kept inline until object storage is wired (size-capped)
+    mapping: Schema.Types.Mixed,
+    dedupePolicy: { type: String, enum: ['skip', 'merge', 'overwrite'], default: 'merge' },
+    sourceId: ObjectId,
+    stats: Schema.Types.Mixed,
+    cursor: { type: Number, default: 0 },
+    createdBy: ObjectId,
+  });
+  const ImportMapping = make(conn, 'ImportMapping', { name: { type: String, required: true }, mapping: Schema.Types.Mixed });
+  const ImportRowError = make(conn, 'ImportRowError', {
+    jobId: { type: ObjectId, required: true },
+    rowNo: Number,
+    raw: Schema.Types.Mixed,
+    reason: String,
   });
 
   /** Dedupe source of truth: unique (tenantId, kind, valueNorm). */
@@ -159,6 +242,7 @@ export function buildModels(conn: Connection) {
 
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
+    LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportMapping, ImportRowError,
     IntegrationConnection, IntegrationInbox, Event, AuditLog, Counter,
   };
 }

@@ -6,9 +6,10 @@ import { JwtAuthGuard, PermissionGuard } from './common/guards';
 import { TenantContextInterceptor } from './common/tenant-context.interceptor';
 import { ConnectionsModule } from './connections/connections.module';
 import { DbModule } from '@leaddesk/platform';
+import { LeadsModule } from './leads/leads.module';
 
 @Module({
-  imports: [DbModule, AuditModule, AuthModule, ConnectionsModule],
+  imports: [DbModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },

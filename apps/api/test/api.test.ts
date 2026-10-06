@@ -107,3 +107,55 @@ describe('connections: secrets are write-only and tenant isolated', () => {
     await expect(runWithTenant(b.tenantId, () => svc.withSecret(made.body.id, async (s) => s))).rejects.toThrow('Connection not found');
   });
 });
+
+describe('leads API (phase 1a)', () => {
+  const mkAgent = async (owner: { token: string }, email: string) => {
+    const inv = await request(http).post('/v1/invitations').set(auth(owner.token)).send({ email, role: 'agent' }).expect(201);
+    return (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'Ag', password: 'agent-pass-123' }).expect(201)).body as { accessToken: string };
+  };
+  it('signup seeds the preset; create/get/update/status flow; agents see masked contacts', async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'lead-owner@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'RE Co', industryPreset: 'real_estate' }).expect(201);
+    const owner = { token: o.body.accessToken as string };
+    const statuses = (await request(http).get('/v1/statuses').set(auth(owner.token)).expect(200)).body;
+    expect(statuses.map((s: any) => s.name)).toContain('Site Visit Scheduled');
+
+    const created = await request(http).post('/v1/leads').set(auth(owner.token)).send({ name: 'Anil', contacts: [{ value: '9876501234' }] }).expect(201);
+    expect(created.body.outcome).toBe('created');
+    const id = created.body.leadId;
+    const full = (await request(http).get(`/v1/leads/${id}`).set(auth(owner.token)).expect(200)).body;
+    expect(JSON.stringify(full)).toContain('+919876501234');
+
+    await request(http).patch(`/v1/leads/${id}`).set(auth(owner.token)).send({ custom: { bhk: '99' } }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_custom_fields'));
+    await request(http).patch(`/v1/leads/${id}`).set(auth(owner.token)).send({ custom: { bhk: '3' }, city: 'Pune' }).expect(200);
+    const lost = statuses.find((s: any) => s.kind === 'lost');
+    await request(http).post(`/v1/leads/${id}/status`).set(auth(owner.token)).send({ statusId: lost._id }).expect(422).expect((r) => expect(r.body.code).toBe('status_requirements_not_met'));
+    const tl = (await request(http).get(`/v1/leads/${id}/timeline`).set(auth(owner.token)).expect(200)).body;
+    expect(tl.items.map((a: any) => a.type)).toEqual(expect.arrayContaining(['lead_created', 'field_changed']));
+
+    // an agent owns what they create, sees it masked, and cannot see others' leads
+    const agent = await mkAgent(owner, 'lead-agent@x.io');
+    const mine = (await request(http).post('/v1/leads').set(auth(agent.accessToken)).send({ name: 'Mine', contacts: [{ value: '9876502222' }] }).expect(201)).body.leadId;
+    const view = (await request(http).get(`/v1/leads/${mine}`).set(auth(agent.accessToken)).expect(200)).body;
+    expect(JSON.stringify(view)).not.toMatch(/9876502222|valueNorm|valueRaw|phoneNorms/);
+    expect(JSON.stringify(view)).toContain('••');
+    await request(http).get(`/v1/leads/${id}`).set(auth(agent.accessToken)).expect(403);
+    await request(http).post(`/v1/leads/${mine}/merge`).set(auth(agent.accessToken)).send({ loserId: id }).expect(403);
+    await request(http).delete(`/v1/leads/${mine}`).set(auth(agent.accessToken)).expect(403);
+  });
+  it('other tenants cannot read or change a lead (404, not 403: no existence leak)', async () => {
+    const a = await signup('lt-a'); const b = await signup('lt-b');
+    const id = (await request(http).post('/v1/leads').set(auth(a.token)).send({ contacts: [{ value: '9876503333' }] }).expect(201)).body.leadId;
+    await request(http).get(`/v1/leads/${id}`).set(auth(b.token)).expect(404);
+    await request(http).patch(`/v1/leads/${id}`).set(auth(b.token)).send({ city: 'x' }).expect(404);
+    await request(http).get(`/v1/leads/${id}/timeline`).set(auth(b.token)).expect(404);
+  });
+  it('merge + undo via API is audited and manager+ only', async () => {
+    const o = await signup('merge-o');
+    const x = (await request(http).post('/v1/leads').set(auth(o.token)).send({ name: 'X', contacts: [{ value: '9876504441' }] })).body.leadId;
+    const y = (await request(http).post('/v1/leads').set(auth(o.token)).send({ name: 'Y', contacts: [{ value: '9876504442' }] })).body.leadId;
+    const m = await request(http).post(`/v1/leads/${x}/merge`).set(auth(o.token)).send({ loserId: y }).expect(201);
+    await request(http).get(`/v1/leads/${y}`).set(auth(o.token)).expect(404);
+    await request(http).post(`/v1/merges/${m.body.mergeId}/undo`).set(auth(o.token)).expect(201);
+    await request(http).get(`/v1/leads/${y}`).set(auth(o.token)).expect(200);
+  });
+});

@@ -54,6 +54,17 @@ export function createRepositories(m: Models) {
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
     counters: new TenantScopedRepository(m.Counter),
+    contactIndex,
+    statuses: new TenantScopedRepository(m.LeadStatus),
+    lostReasons: new TenantScopedRepository(m.LostReason),
+    sources: new TenantScopedRepository(m.LeadSource),
+    customFields: new TenantScopedRepository(m.CustomFieldDef),
+    activities: new TenantScopedRepository(m.Activity),
+    merges: new TenantScopedRepository(m.LeadMerge),
+    views: new TenantScopedRepository(m.SavedView),
+    importJobs: new TenantScopedRepository(m.ImportJob),
+    importMappings: new TenantScopedRepository(m.ImportMapping),
+    importRowErrors: new TenantScopedRepository(m.ImportRowError),
   };
 }
 export type Repositories = ReturnType<typeof createRepositories>;
@@ -110,3 +121,5 @@ export { requireTenantId };
 
 /** Lets feature code mint ids without importing mongoose directly. */
 export const newObjectId = () => new Types.ObjectId();
+export const toObjectId = (id: string | Types.ObjectId) => new Types.ObjectId(String(id));
+export const isObjectId = (id: unknown): boolean => typeof id === 'string' && /^[a-f0-9]{24}$/i.test(id);

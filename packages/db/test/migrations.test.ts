@@ -20,3 +20,11 @@ it('migrations are idempotent and reversible; tenant-owned indexes lead with ten
   expect(await migrateDown(db)).toBe('20250101000001-init');
   expect((await migrateUp(db)).length).toBe(1);
 });
+
+it('every indexed collection corresponds to a real model collection (no silent name drift)', async () => {
+  const { buildModels } = await import('../src/models');
+  const mongoose = (await import('mongoose')).default;
+  const conn = mongoose.createConnection();
+  const names = new Set(Object.values(buildModels(conn)).map((m: any) => m.collection.name));
+  for (const i of INDEXES) expect(names.has(i.collection), i.collection).toBe(true);
+});

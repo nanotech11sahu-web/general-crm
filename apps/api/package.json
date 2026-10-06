@@ -12,6 +12,7 @@
     "@leaddesk/connectors-core": "workspace:*",
     "@leaddesk/crypto": "workspace:*",
     "@leaddesk/db": "workspace:*",
+    "@leaddesk/domain": "workspace:*",
     "@leaddesk/platform": "workspace:*",
     "@leaddesk/shared": "workspace:*",
     "@nestjs/common": "^11.0.0",
