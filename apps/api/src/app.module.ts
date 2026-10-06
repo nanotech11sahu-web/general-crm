@@ -18,11 +18,13 @@ import { MessagingModule } from './messaging/messaging.module';
 import { CadencesModule } from './cadences/cadences.module';
 import { PulseModule } from './pulse/pulse.module';
 import { AiModule } from './ai/ai.module';
+import { HardeningModule, RateLimitGuard } from './hardening/hardening.module';
 
 @Module({
-  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule, AiModule],
+  imports: [DbModule, HardeningModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule, ImportsModule, NotificationsModule, OAuthModule, DoModule, RoutingModule, RealtimeModule, MessagingModule, CadencesModule, PulseModule, AiModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
   ],

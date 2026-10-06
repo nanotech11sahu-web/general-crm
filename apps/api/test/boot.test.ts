@@ -20,7 +20,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${port}`;
   child = spawn('node', ['-r', '@swc-node/register', 'src/main.ts'], {
     cwd: resolve(__dirname, '..'),
-    env: { ...process.env, MONGO_URL: url, PORT: String(port), JWT_ACCESS_SECRET: 'boot-secret', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), NODE_ENV: 'test' },
+    env: { ...process.env, MONGO_URL: url, PORT: String(port), JWT_ACCESS_SECRET: 'boot-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), NODE_ENV: 'test' },
   });
   child.stdout?.on('data', (d) => { logs += d; }); child.stderr?.on('data', (d) => { logs += d; });
   for (let i = 0; i < 120; i++) {

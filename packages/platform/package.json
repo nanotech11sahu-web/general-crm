@@ -3,12 +3,20 @@
   "version": "0.0.1",
   "private": true,
   "main": "src/index.ts",
-  "scripts": { "typecheck": "tsc -p . --noEmit" },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "test": "vitest run"
+  },
   "dependencies": {
     "@leaddesk/crypto": "workspace:*",
     "@leaddesk/db": "workspace:*",
     "@nestjs/common": "^11.0.0",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "ioredis": "^5.4.0"
   },
-  "devDependencies": { "@types/node": "^22.10.0" }
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/express": "^5.0.0",
+    "vitest": "^2.1.0"
+  }
 }

@@ -1,34 +1,40 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
-import { IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import type { Request, Response } from 'express';
 import { AuthService, Tokens } from './auth.service';
 import { CurrentUser, Public, RequirePermission } from '../common/guards';
+import { REFRESH_COOKIE } from '../common/constants';
+import { RateLimit } from '../hardening/hardening.module';
 import type { AuthUser } from '../common/auth.types';
 
 class SignupDto {
   @IsEmail() email!: string;
-  @IsString() @MinLength(10) password!: string;
-  @IsString() @MinLength(1) name!: string;
-  @IsString() @MinLength(2) tenantName!: string;
+  @IsString() @MinLength(10) @MaxLength(128) password!: string;
+  @IsString() @MinLength(1) @MaxLength(120) name!: string;
+  @IsString() @MinLength(2) @MaxLength(120) tenantName!: string;
   @IsOptional() @IsString() country?: string;
   @IsOptional() @IsString() industryPreset?: string;
 }
 class LoginDto {
   @IsEmail() email!: string;
-  @IsString() password!: string;
+  @IsString() @MaxLength(128) password!: string;
   @IsOptional() @IsString() tenantId?: string;
+  @IsOptional() @IsString() @MaxLength(40) totp?: string;
 }
+class CodeDto { @IsString() @MinLength(6) @MaxLength(40) code!: string }
+class DisableDto { @IsString() @MaxLength(128) password!: string; @IsString() @MinLength(6) @MaxLength(40) code!: string }
+class PasswordDto { @IsString() @MaxLength(128) current!: string; @IsString() @MinLength(10) @MaxLength(128) next!: string }
 class InviteDto {
   @IsEmail() email!: string;
   @IsIn(['admin', 'manager', 'agent']) role!: 'admin' | 'manager' | 'agent';
   @IsOptional() @IsString() teamId?: string;
 }
 class AcceptDto {
-  @IsString() @MinLength(1) name!: string;
-  @IsString() @MinLength(10) password!: string;
+  @IsString() @MinLength(1) @MaxLength(120) name!: string;
+  @IsString() @MinLength(10) @MaxLength(128) password!: string;
 }
 
-const COOKIE = 'ld_refresh';
+const COOKIE = REFRESH_COOKIE;
 function setRefresh(res: Response, t: Tokens) {
   res.cookie(COOKIE, t.refreshToken, { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', path: '/v1/auth', maxAge: 30 * 24 * 3600 * 1000 });
   return { accessToken: t.accessToken, tenantId: t.tenantId, role: t.role };
@@ -38,13 +44,13 @@ function setRefresh(res: Response, t: Tokens) {
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  @Public() @Post('auth/signup')
+  @Public() @RateLimit('signup') @Post('auth/signup')
   async signup(@Body() b: SignupDto, @Res({ passthrough: true }) res: Response) { return setRefresh(res, await this.auth.signup(b)); }
 
-  @Public() @Post('auth/login') @HttpCode(200)
-  async login(@Body() b: LoginDto, @Res({ passthrough: true }) res: Response) { return setRefresh(res, await this.auth.login(b)); }
+  @Public() @RateLimit('login') @Post('auth/login') @HttpCode(200)
+  async login(@Body() b: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) { return setRefresh(res, await this.auth.login(b, req.ip)); }
 
-  @Public() @Post('auth/refresh') @HttpCode(200)
+  @Public() @RateLimit('refresh') @Post('auth/refresh') @HttpCode(200)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     return setRefresh(res, await this.auth.refresh(req.cookies?.[COOKIE]));
   }
@@ -55,13 +61,20 @@ export class AuthController {
     res.clearCookie(COOKIE, { path: '/v1/auth' });
   }
 
+  /** Two-factor (TOTP). Setup returns the secret once; enabling needs a valid code and returns single-use recovery codes. */
+  @Post('auth/2fa/setup') totpSetup(@CurrentUser() u: AuthUser) { return this.auth.totpSetup(u.userId); }
+  @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
+  @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
+  @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+
   @Get('me')
   me(@CurrentUser() u: AuthUser) { return u; }
 
   @Post('invitations') @RequirePermission('users.invite')
   invite(@CurrentUser() u: AuthUser, @Body() b: InviteDto) { return this.auth.invite(u, b, u.tenantId); }
 
-  @Public() @Post('invitations/:token/accept')
+  @Public() @RateLimit('accept') @Post('invitations/:token/accept')
   async accept(@Param('token') token: string, @Body() b: AcceptDto, @Res({ passthrough: true }) res: Response) {
     return setRefresh(res, await this.auth.acceptInvitation(token, b));
   }

@@ -31,7 +31,9 @@ export function buildModels(conn: Connection) {
     passwordHash: { type: String },
     name: { type: String, required: true },
     phone: String,
-    totpSecretEnc: Buffer,
+    totp: Schema.Types.Mixed,        // { secret: {ciphertext, wrappedDek, keyRef}, enabledAt, lastStep } — secret sealed with the key service
+    totpPending: Schema.Types.Mixed, // set by setup, promoted by a valid first code
+    recoveryHashes: [String],        // sha256 of single-use recovery codes
     status: { type: String, enum: ['active', 'disabled'], default: 'active' },
   }, { global: true });
 

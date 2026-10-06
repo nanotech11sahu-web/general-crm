@@ -28,7 +28,8 @@ export class MembershipCache {
     const hit = this.m.get(membershipId);
     if (hit && hit.exp > Date.now()) return hit.active;
     const row: any = await runWithTenant(tenantId, () => this.db.repos.memberships.findOne({ _id: membershipId }));
-    const active = row?.status === 'active';
+    const tenant: any = await this.db.models.Tenant.findById(tenantId, { status: 1 }).lean().exec(); // suspended / deleting workspaces lose access within the cache TTL
+    const active = row?.status === 'active' && (!tenant?.status || tenant.status === 'active');
     this.m.set(membershipId, { active, exp: Date.now() + this.ttlMs });
     return active;
   }

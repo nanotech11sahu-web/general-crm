@@ -19,7 +19,8 @@ let providerFetch: (url: string, init?: any) => Promise<any> = async () => ({ ok
 beforeAll(async () => {
   rs = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   process.env.MONGO_URL = rs.getUri('api_test');
-  process.env.JWT_ACCESS_SECRET = 'test-access';
+  process.env.JWT_ACCESS_SECRET = 'test-access-secret-123';
+  process.env.RATE_LIMITS = 'off'; // abuse limits are exercised in hardening.test.ts
   process.env.LOCAL_KEK_BASE64 = randomBytes(32).toString('base64');
   Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test', PUBLIC_INGRESS_URL: 'https://hooks.example.test', OBJECT_SIGNING_SECRET: 'test-signing-secret-0123456789', RECORDINGS_DIR: mkdtempSync(join(tmpdir(), 'ld-rec-')) });
   delete process.env.PUBLIC_APP_URL;
