@@ -145,30 +145,37 @@ export class RetentionService {
   private get r() { return this.db.repos; }
   async settings() {
     const t: any = await this.db.models.Tenant.findById(requireTenantId()).lean().exec(); const s = t?.settings?.retention ?? {};
-    return { recordingDays: s.recordingDays ?? 180, softDeletedLeadDays: s.softDeletedLeadDays ?? 30 };
+    return { recordingDays: s.recordingDays ?? 180, softDeletedLeadDays: s.softDeletedLeadDays ?? 30, importDays: s.importDays ?? 30 };
   }
-  async updateSettings(p: { recordingDays?: number; softDeletedLeadDays?: number }) {
+  async updateSettings(p: { recordingDays?: number; softDeletedLeadDays?: number; importDays?: number }) {
     const set: Record<string, unknown> = {};
     if (p.recordingDays !== undefined) { if (!Number.isInteger(p.recordingDays) || p.recordingDays < 7 || p.recordingDays > 3650) throw new DomainError('invalid_settings', 'recordingDays must be 7 to 3650'); set['settings.retention.recordingDays'] = p.recordingDays; }
     if (p.softDeletedLeadDays !== undefined) { if (!Number.isInteger(p.softDeletedLeadDays) || p.softDeletedLeadDays < 1 || p.softDeletedLeadDays > 365) throw new DomainError('invalid_settings', 'softDeletedLeadDays must be 1 to 365'); set['settings.retention.softDeletedLeadDays'] = p.softDeletedLeadDays; }
+    if (p.importDays !== undefined) { if (!Number.isInteger(p.importDays) || p.importDays < 1 || p.importDays > 365) throw new DomainError('invalid_settings', 'importDays must be 1 to 365'); set['settings.retention.importDays'] = p.importDays; }
     if (Object.keys(set).length) await this.db.models.Tenant.updateOne({ _id: requireTenantId() }, { $set: set });
     return this.settings();
   }
   async run() {
     const s = await this.settings(); const now = this.now();
-    let recordings = 0, leads = 0;
+    let recordings = 0, leads = 0, imports = 0;
     const old: any[] = await this.r.callSessions.find({ recordingObjectKey: { $ne: null }, startedAt: { $lt: new Date(now.getTime() - s.recordingDays * DAY) } }, { limit: 500 });
     for (const c of old) { await this.store?.delete(c.recordingObjectKey); await this.r.callSessions.updateOne({ _id: c._id }, { $set: { recordingObjectKey: null, recordingExpiredAt: now }, $unset: { 'analysis.transcript': 1 } }); recordings++; }
     const gone: any[] = await this.r.leads.find({ deletedAt: { $lt: new Date(now.getTime() - s.softDeletedLeadDays * DAY) } }, { limit: 200, projection: { _id: 1 } });
     for (const l of gone) { await new PrivacyService(this.db, this.store, () => now).eraseLead(String(l._id), { reason: 'retention' }); leads++; }
-    return { recordings, leads };
+    // uploaded spreadsheets are copies of customer contact data: they go once the import is over (or was abandoned) and its window has passed
+    const stale: any[] = await this.r.importJobs.find({ status: { $ne: 'running' }, purgedAt: null, updatedAt: { $lt: new Date(now.getTime() - s.importDays * DAY) } }, { limit: 200, projection: { _id: 1 } });
+    for (const j of stale) {
+      await this.r.importRows.deleteMany({ jobId: j._id }); await this.r.importRowErrors.deleteMany({ jobId: j._id });
+      await this.r.importJobs.updateOne({ _id: j._id }, { $set: { purgedAt: now, headers: [], mapping: null } }); imports++;
+    }
+    return { recordings, leads, imports };
   }
   static async sweepAll(db: TenantDb, sys: SystemOps, store?: ObjectStore, now: () => Date = () => new Date()) {
-    let recordings = 0, leads = 0, purged = 0;
+    let recordings = 0, leads = 0, purged = 0, imports = 0;
     for (const t of (await sys.activeTenants()) as any[]) {
-      try { const r = await runWithTenant(String(t._id), () => new RetentionService(db, store, now).run()); recordings += r.recordings; leads += r.leads; } catch { /* next tenant */ }
+      try { const r = await runWithTenant(String(t._id), () => new RetentionService(db, store, now).run()); recordings += r.recordings; leads += r.leads; imports += r.imports; } catch { /* next tenant */ }
     }
     for (const t of (await sys.deletionsDue(now())) as any[]) { try { await TenantDataService.purge(db, sys, String(t._id), store); purged++; } catch { /* retried next run */ } }
-    return { recordings, leads, purged };
+    return { recordings, leads, imports, purged };
   }
 }

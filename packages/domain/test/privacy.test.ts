@@ -127,12 +127,32 @@ describe('retention and workspace deletion', () => {
     });
     const svc = () => new RetentionService(db, store, () => NOW);
     await expect(as(T, () => svc().updateSettings({ recordingDays: 3 }))).rejects.toMatchObject({ code: 'invalid_settings' });
-    expect(await as(T, () => svc().run())).toEqual({ recordings: 1, leads: 1 });
+    expect(await as(T, () => svc().run())).toEqual({ recordings: 1, leads: 1, imports: 0 });
     expect(existsSync(join(dir, `tenants/${T}/recordings/${a.id}.mp3`))).toBe(false);
     expect(((await as(T, () => db.repos.callSessions.findOne({ leadId: a.id }))) as any)).toMatchObject({ recordingObjectKey: null });
     expect(await as(T, () => db.repos.leads.findById(b.id))).toBeNull();
     expect(await as(T, () => db.repos.leads.findById(a.id))).toBeTruthy();
-    expect(await as(T, () => svc().run())).toEqual({ recordings: 0, leads: 0 }); // idempotent
+    expect(await as(T, () => svc().run())).toEqual({ recordings: 0, leads: 0, imports: 0 }); // idempotent
+  });
+
+  it('uploaded spreadsheets (rows and error rows) are purged after the import window, finished or abandoned, never while running; the job summary stays', async () => {
+    const T = await mkTenant('imp1'); const { ObjectId } = await import('mongodb');
+    const mk = (status: string, daysOld: number) => as(T, async () => {
+      const j: any = await db.repos.importJobs.create({ filename: `${status}.csv`, status, headers: ['Name', 'Phone'], rowCount: 2, mapping: { Name: 'name' }, stats: { created: 2 } });
+      await db.repos.importRows.createMany([{ jobId: j._id, rowNo: 1, data: ['Asha', '9812345678'] }, { jobId: j._id, rowNo: 2, data: ['Bala', '9812345679'] }]);
+      await db.repos.importRowErrors.create({ jobId: j._id, rowNo: 2, raw: ['Bala', '98'], reason: 'bad phone' });
+      await db.models.ImportJob.collection.updateOne({ _id: j._id }, { $set: { updatedAt: ago(daysOld) } }); return String(j._id);
+    });
+    const done = await mk('done', 45), abandoned = await mk('mapped', 60), recent = await mk('done', 5), running = await mk('running', 90);
+    const svc = () => new RetentionService(db, store, () => NOW);
+    await expect(as(T, () => svc().updateSettings({ importDays: 0 }))).rejects.toMatchObject({ code: 'invalid_settings' });
+    expect((await as(T, () => svc().run())).imports).toBe(2);
+    const rows = (id: string) => as(T, () => db.repos.importRows.count({ jobId: new ObjectId(id) })); const errs = (id: string) => as(T, () => db.repos.importRowErrors.count({ jobId: new ObjectId(id) }));
+    expect([await rows(done), await errs(done), await rows(abandoned), await errs(abandoned)]).toEqual([0, 0, 0, 0]);
+    expect([await rows(recent), await errs(recent), await rows(running)]).toEqual([2, 1, 2]); // inside the window, or still running
+    const j: any = await as(T, () => db.repos.importJobs.findById(done)); expect(j).toMatchObject({ status: 'done', purgedAt: expect.any(Date), stats: { created: 2 }, filename: 'done.csv' }); expect(j.headers).toEqual([]);
+    expect((await as(T, () => svc().run())).imports).toBe(0); // idempotent
+    await as(T, () => svc().updateSettings({ importDays: 3 })); expect((await as(T, () => svc().run())).imports).toBe(1); // the 5-day-old one now falls outside a 3-day window
   });
 
   it('deletion has a grace period and can be cancelled; after it the whole workspace is purged but a shared user survives', async () => {

@@ -13,12 +13,13 @@
     "migrate": "pnpm --filter @leaddesk/db migrate",
     "dev:api": "pnpm --filter @leaddesk/api dev",
     "dev:worker": "pnpm --filter @leaddesk/worker dev",
-    "dev:ingress": "pnpm --filter @leaddesk/webhook-ingress dev"
+    "dev:ingress": "pnpm --filter @leaddesk/webhook-ingress dev",
+    "build:dist": "node scripts/build-dist.cjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
     "@swc-node/register": "^1.12.1",
-    "@swc/core": "^1.10.0",
+    "@swc/core": "1.16.13",
     "eslint": "^9.17.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

@@ -47,7 +47,7 @@ export class SubscriptionGuard implements CanActivate {
 
 class CheckoutDto { @IsIn(['starter', 'growth', 'scale']) plan!: string; @IsInt() @Min(1) @Max(500) seats!: number }
 class PlanChangeDto { @IsIn(['starter', 'growth', 'scale']) plan!: string; @IsOptional() @IsInt() @Min(1) @Max(500) seats?: number }
-class ProfileDto {
+class BillingProfileDto {
   @IsOptional() @IsString() @MaxLength(120) legalName?: string;
   @IsOptional() @IsString() @MaxLength(20) gstin?: string;
   @IsOptional() @IsString() @MaxLength(200) addressLine?: string;
@@ -94,7 +94,7 @@ export class BillingController {
   @Get('profile') @RequirePermission('tenant.manage')
   profile() { return this.f.svc().profile(); }
   @Put('profile') @RequirePermission('billing.manage')
-  setProfile(@Body() b: ProfileDto) { return this.f.svc().setProfile(b); }
+  setProfile(@Body() b: BillingProfileDto) { return this.f.svc().setProfile(b); }
   @Get('invoices') @RequirePermission('tenant.manage')
   invoices() { return this.f.svc().invoices(); }
   @Get('invoices/:id') @RequirePermission('tenant.manage')

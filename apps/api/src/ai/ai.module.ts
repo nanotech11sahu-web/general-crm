@@ -33,7 +33,7 @@ class AutopilotDto {
 }
 class DraftDto { @IsOptional() @IsString() @MaxLength(300) instruction?: string }
 class KbDto { @IsString() @MaxLength(120) title!: string; @IsString() @MaxLength(2000) text!: string; @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[]; @IsOptional() @IsBoolean() active?: boolean }
-class NoteDto { @IsString() @MinLength(3) @MaxLength(1500) note!: string }
+class CallNoteDto { @IsString() @MinLength(3) @MaxLength(1500) note!: string }
 class SearchDto { @IsString() @MinLength(2) @MaxLength(300) q!: string }
 
 @Injectable()
@@ -93,7 +93,7 @@ export class AiController {
   @Post('leads/:id/assess') @RequirePermission('leads.write')
   async assess(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.assess(id); }
   @Post('leads/:id/next-action') @RequirePermission('leads.write')
-  async nextAction(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: NoteDto) { await this.f.visibleLead(u, id); return this.f.svc.nextAction(id, b.note); }
+  async nextAction(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: CallNoteDto) { await this.f.visibleLead(u, id); return this.f.svc.nextAction(id, b.note); }
 
   @Post('leads/:id/reply-draft') @RequirePermission('leads.write')
   async replyDraft(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: DraftDto) { await this.f.visibleLead(u, id); return this.f.svc.draftReply(id, b); }

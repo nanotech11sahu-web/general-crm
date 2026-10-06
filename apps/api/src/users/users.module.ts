@@ -11,7 +11,7 @@ class OffboardDto {
   @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) poolUserIds?: string[];
 }
 
-class ProfileDto {
+class MemberProfileDto {
   @IsOptional() @IsObject() workingHours?: Record<string, unknown>;
   @IsOptional() @IsArray() @ArrayMaxSize(20) @IsString({ each: true }) languages?: string[];
   @IsOptional() @IsArray() @ArrayMaxSize(30) @IsString({ each: true }) skills?: string[];
@@ -33,7 +33,7 @@ export class UsersService {
   }
 
   /** Routing inputs: working hours, languages, skills, capacity, leave, team. */
-  async updateProfile(userId: string, p: ProfileDto) {
+  async updateProfile(userId: string, p: MemberProfileDto) {
     const set: Record<string, unknown> = {};
     for (const k of ['workingHours', 'languages', 'skills', 'maxOpenLeads'] as const) if (p[k] !== undefined) set[k] = p[k];
     if (p.onLeaveUntil !== undefined) set.onLeaveUntil = p.onLeaveUntil ? new Date(p.onLeaveUntil) : null;
@@ -59,7 +59,7 @@ export class UsersController {
   constructor(private readonly svc: UsersService) {}
   @Get() @RequirePermission('leads.reassign') list() { return this.svc.list(); }
   @Patch(':id/profile') @RequirePermission('users.manage')
-  profile(@Param('id') id: string, @Body() b: ProfileDto) { return this.svc.updateProfile(id, b); }
+  profile(@Param('id') id: string, @Body() b: MemberProfileDto) { return this.svc.updateProfile(id, b); }
 
   @Post(':id/offboard') @RequirePermission('users.offboard')
   offboard(@Param('id') id: string, @Body() b: OffboardDto) { return this.svc.offboard(id, b); }

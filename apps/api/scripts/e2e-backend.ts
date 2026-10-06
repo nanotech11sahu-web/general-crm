@@ -28,7 +28,9 @@ async function main() {
   const rs = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   const url = rs.getUri('e2e');
   const c = await MongoClient.connect(url); await migrateUp(c.db()); await c.close();
-  const api = spawn('node', ['-r', '@swc-node/register', 'src/main.ts'], {
+  // E2E_COMPILED=1 runs the production build (scripts/build-dist.cjs) instead of the TypeScript source
+  const cmd = process.env.E2E_COMPILED === '1' ? ['-r', resolve(__dirname, '../../../scripts/use-dist.cjs'), 'dist/main.js'] : ['-r', '@swc-node/register', 'src/main.ts'];
+  const api = spawn('node', cmd, {
     cwd: resolve(__dirname, '..'),
     env: { ...process.env, MONGO_URL: url, PORT: String(PORT), JWT_ACCESS_SECRET: 'e2e-secret-0123456789', LOCAL_KEK_BASE64: randomBytes(32).toString('base64'), REALTIME_POLL_MS: '200', RATE_LIMIT_SCALE: '50', NODE_ENV: 'test', MAIL_CAPTURE_FILE: MAIL_FILE, PUBLIC_APP_URL: 'http://127.0.0.1:3400', CORS_ORIGINS: 'http://localhost:3400', WEBAUTHN_ORIGIN: 'http://localhost:3400', WEBAUTHN_RP_ID: 'localhost' },
     stdio: ['ignore', 'inherit', 'inherit'],

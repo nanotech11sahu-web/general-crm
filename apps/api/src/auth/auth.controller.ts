@@ -26,7 +26,7 @@ class LoginDto {
 }
 class CodeDto { @IsString() @MinLength(6) @MaxLength(40) code!: string }
 class DisableDto { @IsString() @MaxLength(128) password!: string; @IsString() @MinLength(6) @MaxLength(40) code!: string }
-class PasswordDto { @IsString() @MaxLength(128) current!: string; @IsString() @MinLength(10) @MaxLength(128) next!: string }
+class ChangePasswordDto { @IsString() @MaxLength(128) current!: string; @IsString() @MinLength(10) @MaxLength(128) next!: string }
 class InviteDto {
   @IsEmail() email!: string;
   @IsIn(['admin', 'manager', 'agent']) role!: 'admin' | 'manager' | 'agent';
@@ -96,7 +96,7 @@ export class AuthController {
   @AllowRestricted() @AllowPre2fa() @Post('auth/2fa/enable') totpEnable(@CurrentUser() u: AuthUser, @Body() b: CodeDto) { return this.auth.totpEnable(u.userId, b.code); }
   @AllowRestricted() @AllowPre2fa() @Post('auth/2fa/disable') @HttpCode(200) totpDisable(@CurrentUser() u: AuthUser, @Body() b: DisableDto) { return this.auth.totpDisable(u.userId, b.password, b.code); }
   @AllowRestricted() @AllowPre2fa() @Post('auth/logout-all') @HttpCode(200) async logoutAll(@CurrentUser() u: AuthUser, @Res({ passthrough: true }) res: Response) { const r = await this.auth.logoutAll(u.userId); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
-  @AllowRestricted() @AllowPre2fa() @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: PasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
+  @AllowRestricted() @AllowPre2fa() @Post('auth/password') @HttpCode(200) async password(@CurrentUser() u: AuthUser, @Body() b: ChangePasswordDto, @Res({ passthrough: true }) res: Response) { const r = await this.auth.changePassword(u.userId, b.current, b.next); res.clearCookie(COOKIE, { path: '/v1/auth' }); return r; }
 
   @AllowPre2fa() @Get('me')
   me(@CurrentUser() u: AuthUser) { return u; }

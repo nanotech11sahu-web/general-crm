@@ -13,7 +13,7 @@ import { AllowRestricted } from '../billing/billing.module';
 
 class EraseDto { @IsOptional() @IsString() @MaxLength(200) reason?: string }
 class PasswordDto { @IsString() @MaxLength(128) password!: string }
-class RetentionDto { @IsOptional() @IsInt() @Min(7) @Max(3650) recordingDays?: number; @IsOptional() @IsInt() @Min(1) @Max(365) softDeletedLeadDays?: number }
+class RetentionDto { @IsOptional() @IsInt() @Min(7) @Max(3650) recordingDays?: number; @IsOptional() @IsInt() @Min(1) @Max(365) softDeletedLeadDays?: number; @IsOptional() @IsInt() @Min(1) @Max(365) importDays?: number }
 
 @Injectable()
 export class PrivacyFacade {

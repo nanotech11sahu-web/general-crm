@@ -41,7 +41,7 @@ class TemplatePatchDto {
   @IsOptional() @IsString() dltHeader?: string;
   @IsOptional() @IsString() providerTemplateId?: string;
 }
-class SignupDto {
+class EmbeddedSignupDto {
   @IsString() @MinLength(5) code!: string;
   @Matches(/^\d{5,30}$/) wabaId!: string;
   @Matches(/^\d{5,30}$/) phoneNumberId!: string;
@@ -138,7 +138,7 @@ export class MessagingController {
    * /v1/connections with provider "whatsapp-cloud") is the fallback.
    */
   @Post('oauth/whatsapp/embedded-signup') @RequirePermission('connections.manage')
-  async embeddedSignup(@Body() b: SignupDto) {
+  async embeddedSignup(@Body() b: EmbeddedSignupDto) {
     if (!process.env.META_APP_ID || !process.env.META_APP_SECRET) throw new DomainError('not_configured', 'Meta app credentials are not configured');
     const { accessToken } = await exchangeEmbeddedSignupCode({ appId: process.env.META_APP_ID, appSecret: process.env.META_APP_SECRET, verifyToken: '', graphVersion: process.env.META_GRAPH_VERSION, fetch: this.f.fetch }, b.code);
     const out = await this.f.conns.create({ provider: 'whatsapp-cloud', name: b.name ?? 'WhatsApp Business', credentials: { accessToken }, config: { wabaId: b.wabaId, phoneNumberId: b.phoneNumberId } });

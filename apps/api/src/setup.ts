@@ -6,6 +6,7 @@ import { cors, csrf, httpMetrics, requestContext, securityHeaders } from '@leadd
 import { ErrorEnvelopeFilter } from './common/domain-error.filter';
 import { REFRESH_COOKIE } from './common/constants';
 import { LOGGER, METRICS } from './hardening/hardening.module';
+import { enrichOpenApi } from './openapi';
 
 
 /** Everything that makes the HTTP surface safe by default; shared by the real server and the test harness. */
@@ -26,7 +27,7 @@ export function configureApp(app: INestApplication) {
   app.useGlobalFilters(new ErrorEnvelopeFilter());
   if (process.env.NODE_ENV !== 'production' || process.env.ENABLE_DOCS === '1') { // API shape is not secret, but production exposes it only on request
     const doc = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('LeadDesk API').setVersion('1').setDescription('Bearer JWT (15 min) + httpOnly refresh cookie. Errors: { code, message, details, requestId }.').addBearerAuth().build());
-    SwaggerModule.setup('docs', app, doc, { jsonDocumentUrl: 'openapi.json' });
+    SwaggerModule.setup('docs', app, enrichOpenApi(doc as any, app) as any, { jsonDocumentUrl: 'openapi.json' });
   }
   return app;
 }

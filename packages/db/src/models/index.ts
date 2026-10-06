@@ -177,6 +177,7 @@ export function buildModels(conn: Connection) {
     stats: Schema.Types.Mixed,
     cursor: { type: Number, default: 0 },
     createdBy: ObjectId,
+    purgedAt: Date, // retention removed the uploaded rows and error rows (contact data); the job summary stays
   });
   /** Parsed rows live in their own collection (16MB doc limit); object storage replaces this in a later phase. */
   const ImportRow = make(conn, 'ImportRow', {

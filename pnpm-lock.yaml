@@ -19,7 +19,7 @@ importers:
         specifier: ^1.12.1
         version: 1.12.1(@swc/core@1.16.13)(@swc/types@0.1.28)(typescript@5.9.3)
       '@swc/core':
-        specifier: ^1.10.0
+        specifier: 1.16.13
         version: 1.16.13
       eslint:
         specifier: ^9.17.0

@@ -192,6 +192,17 @@ describe('OpenAPI', () => {
     expect(doc.openapi).toMatch(/^3\./); expect(doc.components.securitySchemes.bearer).toBeDefined();
     for (const p of ['/v1/auth/login', '/v1/leads', '/v1/do/queue', '/v1/pulse/kpis', '/v1/ai/settings', '/v1/messages', '/v1/tenant/export', '/healthz']) expect(Object.keys(doc.paths), p).toContain(p);
     expect(Object.keys(doc.paths).length).toBeGreaterThan(100);
+    // request bodies carry real schemas generated from the validation decorators
+    const s = doc.components.schemas;
+    const { dtoClasses } = await import('../src/openapi'); const clashes: string[] = []; dtoClasses(app, (n) => clashes.push(n)); expect(clashes, 'two request classes share a name, so their schemas would overwrite each other').toEqual([]);
+    expect(s.SignupDto).toMatchObject({ type: 'object', required: expect.arrayContaining(['email', 'password', 'name', 'tenantName']) });
+    expect(s.SignupDto.required).not.toContain('country'); // @IsOptional
+    expect(s.SignupDto.properties).toMatchObject({ email: { type: 'string', format: 'email' }, password: { type: 'string', minLength: 10, maxLength: 128 }, country: { type: 'string' } });
+    expect(s.InviteDto.properties.role).toMatchObject({ type: 'string', enum: ['admin', 'manager', 'agent'] });
+    expect(s.CheckoutDto.properties.seats).toMatchObject({ type: 'integer', minimum: 1, maximum: 500 });
+    expect(s.StatusDefDto.properties.requiresFields).toMatchObject({ type: 'array', items: { type: 'string' } });
+    expect(s.RulesDto.properties.rules).toEqual({ type: 'array', items: { $ref: '#/components/schemas/RuleDto' } }); expect(s.RuleDto.required).toEqual(expect.arrayContaining(['name', 'action']));
+    expect(doc.paths['/v1/auth/signup'].post.requestBody.content['application/json'].schema).toEqual({ $ref: '#/components/schemas/SignupDto' });
   });
 });
 
