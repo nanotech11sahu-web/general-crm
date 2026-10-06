@@ -27,6 +27,7 @@ export class CrossTenantError extends Error {
 export const SYSTEM_OPERATIONS = [
   'webhook.resolveConnection',
   'outbox.dispatch',
+  'tasks.sweep',
   'scheduler.listConnections',
   'auth.findUserByEmail',
   'auth.listMemberships',

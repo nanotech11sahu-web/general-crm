@@ -40,7 +40,7 @@ export function detectSilence(receivedAt: Date[], now: Date, tz: string): Silenc
   return { silent: silentFor > threshold, baselineEvents: ts.length, typicalGapMin: typical, thresholdMin: threshold, silentForMin: silentFor };
 }
 
-export interface Notifier { notify(n: { kind: string; audience: 'admins' | 'user'; userId?: string; payload: Record<string, unknown>; dedupeKey?: string }): Promise<void> }
+export interface Notifier { notify(n: { kind: string; audience: 'admins' | 'managers' | 'user'; userId?: string; payload: Record<string, unknown>; dedupeKey?: string }): Promise<void> }
 
 export class DbNotifier implements Notifier {
   constructor(private readonly db: TenantDb) {}

@@ -497,3 +497,77 @@ describe('Meta Lead Ads + Google Sheets end to end (phase 2c, recorded-shape fix
     await request(http).get('/v1/oauth/nope/start').set(auth(o.token)).expect(422);
   });
 });
+
+describe('Do engine API (phase 3a)', () => {
+  const iso = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
+  let owner: string; let agent: string; let agentId: string; let agent2: string; let leadId: string;
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'do-owner@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'Do Co', industryPreset: 'real_estate' }).expect(201);
+    owner = o.body.accessToken;
+    const mk = async (email: string) => {
+      const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201);
+      const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email, password: 'agent-pass-123' }).expect(201);
+      return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string };
+    };
+    ({ tok: agent, id: agentId } = await mk('do-a1@x.io')); ({ tok: agent2 } = await mk('do-a2@x.io'));
+    leadId = (await request(http).post('/v1/leads').set(auth(agent)).send({ name: 'Do Lead', contacts: [{ value: '9876600001' }] }).expect(201)).body.leadId;
+  });
+
+  it('Today queue shows the new lead with a reason; no numbers leak; teammates see nothing', async () => {
+    const q = (await request(http).get('/v1/do/queue').set(auth(agent)).expect(200)).body;
+    expect(q.items[0]).toMatchObject({ kind: 'new_lead', leadName: 'Do Lead', suggestedAction: { type: 'call' } });
+    expect(q.items[0].reason).toMatch(/New lead/);
+    expect(JSON.stringify(q)).not.toContain('9876600001');
+    expect((await request(http).get('/v1/do/queue').set(auth(agent2)).expect(200)).body).toMatchObject({ total: 0, caughtUp: true });
+  });
+
+  it('full loop: dial -> end -> outcome sheet enforces a concrete next action -> task -> queue updates', async () => {
+    const call = (await request(http).post('/v1/calls').set(auth(agent)).send({ leadId }).expect(201)).body;
+    expect(call.dialUri).toBe('tel:+919876600001');
+    await request(http).post('/v1/calls').set(auth(agent)).send({ leadId }).expect(409).expect((r) => expect(r.body.code).toBe('outcome_pending'));
+    const q1 = (await request(http).get('/v1/do/queue').set(auth(agent)).expect(200)).body;
+    expect(q1.items[0].kind).toBe('outcome_pending');
+    await request(http).post(`/v1/calls/${call.callSessionId}/end`).set(auth(agent)).send({ durationS: 95 }).expect(201);
+    const outcomes = (await request(http).get('/v1/outcomes').set(auth(agent)).expect(200)).body;
+    const interested = outcomes.find((o: any) => o.label === 'Connected - Interested');
+    // vague / past / missing next action => 422 with field messages
+    for (const next of [undefined, { dueAt: iso(60), contextNote: 'call' }, { dueAt: iso(-60), contextNote: 'Share brochure and confirm visit' }]) {
+      const r = await request(http).post(`/v1/leads/${leadId}/outcome`).set(auth(agent)).send({ outcomeId: interested._id, callSessionId: call.callSessionId, next }).expect(422);
+      expect(r.body.code).toBe('invalid_next_action'); expect(r.body.details).toBeTruthy();
+    }
+    const ok = (await request(http).post(`/v1/leads/${leadId}/outcome`).set(auth(agent)).send({ outcomeId: interested._id, callSessionId: call.callSessionId, durationS: 95, note: 'Wants 3BHK', next: { dueAt: iso(24 * 60), contextNote: 'Share brochure and confirm visit slot' } }).expect(201)).body;
+    expect(ok.task.status).toBe('open'); expect(ok.suggestion.statusId).toBeTruthy();
+    await request(http).post(`/v1/leads/${leadId}/outcome`).set(auth(agent)).send({ outcomeId: interested._id, callSessionId: call.callSessionId, next: { dueAt: iso(600), contextNote: 'Second logging should fail' } }).expect(422).expect((r) => expect(r.body.code).toBe('invalid_state'));
+    const q2 = (await request(http).get('/v1/do/queue').set(auth(agent)).expect(200)).body;
+    expect(q2.items.some((i: any) => i.kind === 'outcome_pending')).toBe(false);
+    expect(q2.items.some((i: any) => i.kind === 'new_lead')).toBe(false); // first contact is logged
+    const tasks = (await request(http).get('/v1/tasks').query({ status: 'open' }).set(auth(agent)).expect(200)).body;
+    expect(tasks).toHaveLength(1); expect(tasks[0].contextNote).toBe('Share brochure and confirm visit slot');
+    await request(http).post('/v1/calls').set(auth(agent)).send({ leadId }).expect(201); // free to dial again
+  });
+
+  it('tasks: create validates, reschedule/complete/cancel, ownership rules', async () => {
+    const lead2 = (await request(http).post('/v1/leads').set(auth(agent)).send({ name: 'Task Lead', contacts: [{ value: '9876600002' }] }).expect(201)).body.leadId;
+    await request(http).post('/v1/tasks').set(auth(agent)).send({ leadId: lead2, dueAt: iso(60), contextNote: 'vague' }).expect(422);
+    await request(http).post('/v1/tasks').set(auth(agent)).send({ leadId: lead2, assigneeId: agentId, dueAt: iso(60), contextNote: 'Call regarding loan paperwork' }).expect(201);
+    await request(http).post('/v1/tasks').set(auth(agent)).send({ leadId: lead2, assigneeId: '65f0000000000000000000aa', dueAt: iso(60), contextNote: 'Call regarding loan paperwork' }).expect(403);
+    const mine = (await request(http).get('/v1/tasks').query({ leadId: lead2 }).set(auth(agent)).expect(200)).body;
+    const t = mine[0];
+    await request(http).patch(`/v1/tasks/${t._id}`).set(auth(agent2)).send({ action: 'complete' }).expect(403); // not theirs
+    await request(http).patch(`/v1/tasks/${t._id}`).set(auth(agent)).send({ action: 'reschedule', dueAt: iso(-5) }).expect(422);
+    const re = (await request(http).patch(`/v1/tasks/${t._id}`).set(auth(agent)).send({ action: 'reschedule', dueAt: iso(180), contextNote: 'Call regarding loan paperwork, evening' }).expect(200)).body;
+    expect(re.status).toBe('open');
+    expect((await request(http).patch(`/v1/tasks/${t._id}`).set(auth(owner)).send({ action: 'complete' }).expect(200)).body.status).toBe('done'); // manager+ may close anyone's
+    await request(http).post('/v1/tasks').set(auth(agent2)).send({ leadId: lead2, dueAt: iso(60), contextNote: 'Call regarding loan paperwork' }).expect(403); // lead not visible to agent2
+  });
+
+  it("outcome skips are capped per day; other agents' leads/calls are off limits", async () => {
+    const l = (await request(http).post('/v1/leads').set(auth(agent2)).send({ name: 'Skip Lead', contacts: [{ value: '9876600003' }] }).expect(201)).body.leadId;
+    const c = (await request(http).post('/v1/calls').set(auth(agent2)).send({ leadId: l }).expect(201)).body;
+    await request(http).post(`/v1/calls/${c.callSessionId}/end`).set(auth(agent)).send({}).expect(403);
+    for (let i = 0; i < 3; i++) await request(http).post(`/v1/calls/${c.callSessionId}/skip-outcome`).set(auth(agent2)).expect(201);
+    await request(http).post(`/v1/calls/${c.callSessionId}/skip-outcome`).set(auth(agent2)).expect(429);
+    await request(http).post('/v1/calls').set(auth(agent)).send({ leadId: l }).expect(403); // not agent's lead
+    await request(http).post(`/v1/leads/${l}/outcome`).set(auth(agent)).send({ outcomeId: '65f0000000000000000000bb' }).expect(403);
+  });
+});

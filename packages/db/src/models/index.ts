@@ -260,11 +260,54 @@ export function buildModels(conn: Connection) {
   }, { timestamps: false });
   const Notification = make(conn, 'Notification', {
     userId: ObjectId, // null = every admin/owner of the tenant
-    audience: { type: String, enum: ['user', 'admins'], default: 'user' },
+    audience: { type: String, enum: ['user', 'admins', 'managers'], default: 'user' },
     kind: { type: String, required: true },
     payload: Schema.Types.Mixed,
     dedupeKey: String,
     readAt: Date,
+  });
+
+  /** Call dispositions per tenant, seeded by the industry preset. */
+  const Outcome = make(conn, 'Outcome', {
+    label: { type: String, required: true },
+    kind: { type: String, enum: ['connected', 'not_connected', 'dead'], required: true },
+    requiresNextAction: { type: Boolean, default: false },
+    defaultNextOffsetMin: Number, // suggested follow-up delay; 0/undefined = agent must pick
+    suggestStatusId: ObjectId,
+    suggestLostReasonLabel: String,
+    active: { type: Boolean, default: true },
+  });
+  /** A follow-up always has a concrete dueAt and a context note: no vague "next week". */
+  const Task = make(conn, 'Task', {
+    leadId: { type: ObjectId, required: true },
+    assigneeId: { type: ObjectId, required: true },
+    type: { type: String, enum: ['call', 'whatsapp', 'sms', 'visit', 'other'], default: 'call' },
+    dueAt: { type: Date, required: true },
+    contextNote: { type: String, required: true },
+    graceMinutes: { type: Number, default: 15 },
+    createdFromOutcomeId: ObjectId,
+    status: { type: String, enum: ['open', 'done', 'missed', 'cancelled'], default: 'open' },
+    completedAt: Date,
+    missedAt: Date,
+    escalatedAt: Date,
+  });
+  const CallSession = make(conn, 'CallSession', {
+    leadId: { type: ObjectId, required: true },
+    agentId: { type: ObjectId, required: true },
+    connectionId: ObjectId,
+    mode: { type: String, enum: ['cloud', 'tap', 'companion', 'softphone'], default: 'tap' },
+    direction: { type: String, enum: ['out', 'in'], default: 'out' },
+    providerCallId: String,
+    state: { type: String, enum: ['dialed', 'ringing', 'answered', 'ended', 'missed'], default: 'dialed' },
+    startedAt: { type: Date, default: Date.now },
+    answeredAt: Date,
+    endedAt: Date,
+    durationS: Number,
+    durationSource: { type: String, enum: ['system', 'self_reported'], default: 'self_reported' },
+    outcomeId: ObjectId,
+    outcomeLoggedAt: Date,
+    outcomeSkips: { type: Number, default: 0 },
+    recordingObjectKey: String,
   });
 
   /** Single-use OAuth `state` (+ PKCE verifier) bound to tenant/user; consumed on callback, TTL 10 min. */
@@ -285,7 +328,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

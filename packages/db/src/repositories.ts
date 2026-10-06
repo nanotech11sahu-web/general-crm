@@ -55,6 +55,9 @@ export function createRepositories(m: Models) {
     healthChecks: new TenantScopedRepository(m.ConnectionHealthCheck),
     notifications: new TenantScopedRepository(m.Notification),
     oauthStates: new TenantScopedRepository(m.OAuthState),
+    outcomes: new TenantScopedRepository(m.Outcome),
+    tasks: new TenantScopedRepository(m.Task),
+    callSessions: new TenantScopedRepository(m.CallSession),
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
     counters: new TenantScopedRepository(m.Counter),
@@ -87,6 +90,14 @@ export function createSystemOps(m: Models) {
     /** App-level webhooks (Meta) arrive per page, not per connection: find every live connection that owns the page. */
     resolveConnectionsByPage: (provider: string, pageId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.pageIds': pageId, status: { $ne: 'revoked' } }).lean().exec()),
+
+    /** Task sweeper: open tasks past their due date across tenants (grace is applied by the caller). */
+    overdueTasks: (before: Date, limit = 500) =>
+      runAsSystem('tasks.sweep', () => m.Task.find({ status: 'open', dueAt: { $lt: before } }, { tenantId: 1, dueAt: 1, graceMinutes: 1 }).sort({ dueAt: 1 }).limit(limit).lean().exec()),
+
+    /** Missed tasks that have sat unhandled long enough to escalate to a manager. */
+    escalatableTasks: (missedBefore: Date, limit = 500) =>
+      runAsSystem('tasks.sweep', () => m.Task.find({ status: 'missed', escalatedAt: null, missedAt: { $lt: missedBefore } }, { tenantId: 1, missedAt: 1 }).sort({ missedAt: 1 }).limit(limit).lean().exec()),
 
     findUserByEmail: (email: string) =>
       runAsSystem('auth.findUserByEmail', () => m.User.findOne({ email: email.toLowerCase() }).exec()),

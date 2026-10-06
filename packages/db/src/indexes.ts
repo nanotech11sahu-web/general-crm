@@ -48,6 +48,13 @@ export const INDEXES: Idx[] = [
   { collection: 'notifications', keys: { tenantId: 1, audience: 1, userId: 1, createdAt: -1 } },
   { collection: 'notifications', keys: { tenantId: 1, dedupeKey: 1 }, options: { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } } },
   { collection: 'notifications', keys: { createdAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
+  { collection: 'outcomes', keys: { tenantId: 1, label: 1 }, options: { unique: true } },
+  { collection: 'tasks', keys: { tenantId: 1, assigneeId: 1, status: 1, dueAt: 1 } },
+  { collection: 'tasks', keys: { tenantId: 1, leadId: 1, status: 1 } },
+  // sweep: open tasks only (partial), cross-tenant by due date
+  { collection: 'tasks', keys: { dueAt: 1 }, options: { partialFilterExpression: { status: 'open' } } },
+  { collection: 'callsessions', keys: { tenantId: 1, agentId: 1, outcomeId: 1, startedAt: -1 } },
+  { collection: 'callsessions', keys: { tenantId: 1, leadId: 1, startedAt: -1 } },
   { collection: 'oauthstates', keys: { tenantId: 1, nonce: 1 }, options: { unique: true } },
   { collection: 'oauthstates', keys: { expiresAt: 1 }, options: { expireAfterSeconds: 0 } },
   // app-level webhooks (Meta) route by page id: a named system lookup, so it cannot lead with tenantId

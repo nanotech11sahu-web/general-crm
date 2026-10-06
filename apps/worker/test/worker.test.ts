@@ -140,3 +140,20 @@ describe('integrity processor and scheduler', () => {
     expect([...queued.values()].some((j) => j.data.connectionId === String(revoked._id))).toBe(false);
   });
 });
+
+describe('DoSweeper', () => {
+  it('marks overdue tasks missed across tenants and is idempotent', async () => {
+    const { DoSweeper } = await import('../src/do-sweeper');
+    const { runAsSystem } = await import('@leaddesk/db');
+    const u: any = await db.models.User.create({ email: 'sweep@x.io', name: 'S' });
+    await runWithTenant(A, () => db.repos.memberships.create({ userId: u._id, role: 'agent' }));
+    const lead: any = await runWithTenant(A, () => db.repos.leads.createWithContacts({ displayName: 'Sweep', contacts: [{ kind: 'phone', valueNorm: '+919000099999' }] }));
+    const task: any = await runWithTenant(A, () => db.repos.tasks.create({ leadId: lead._id, assigneeId: u._id, dueAt: new Date(Date.now() - 3600_000), contextNote: 'Call about sweep test', graceMinutes: 15, status: 'open' }));
+    void runAsSystem;
+    const sw = new DoSweeper(db, sys);
+    expect((await sw.run()).missed).toBeGreaterThanOrEqual(1);
+    expect(((await runWithTenant(A, () => db.repos.tasks.findById(task._id))) as any).status).toBe('missed');
+    expect((await sw.run()).missed).toBe(0);
+    expect(await runWithTenant(A, () => db.repos.notifications.count({ kind: 'task.missed' }))).toBe(2); // agent + managers
+  });
+});

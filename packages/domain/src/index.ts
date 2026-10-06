@@ -10,3 +10,4 @@ export * from './field-map';
 export * from './connections';
 export * from './inbox';
 export * from './integrity';
+export * from './do';

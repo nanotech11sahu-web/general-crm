@@ -12,7 +12,10 @@ export class NotificationsController {
   /** Personal notifications, plus admin-audience ones (connection alerts) for people who can manage connections. */
   private filter(u: AuthUser) {
     const mine = { audience: 'user', userId: toObjectId(u.userId) };
-    return can(u.role, 'connections.manage') ? { $or: [mine, { audience: 'admins' }] } : mine;
+    const ors: Record<string, unknown>[] = [mine];
+    if (can(u.role, 'connections.manage')) ors.push({ audience: 'admins' });
+    if (can(u.role, 'leads.reassign')) ors.push({ audience: 'managers' });
+    return ors.length > 1 ? { $or: ors } : mine;
   }
 
   @Get()

@@ -9,6 +9,7 @@ import { InboxProcessor } from './inbox.processor';
 import { ImportProcessor } from './import.processor';
 import { OutboxDispatcher } from './outbox-dispatcher';
 import { IntegrityProcessor, IntegrityScheduler } from './integrity';
+import { DoSweeper } from './do-sweeper';
 import { KEY_SERVICE } from '@leaddesk/platform';
 
 @Module({ imports: [DbModule] })
@@ -46,13 +47,19 @@ async function bootstrap() {
   const sweepWorker = new Worker('integrity-sweep', async (job) => scheduler.sweep(sweeps.find((x) => x[0] === job.name)![2]), { connection, concurrency: 1 });
   sweepWorker.on('failed', (job, err) => console.error('sweep failed', job?.name, err.message));
 
+  const doSweeper = new DoSweeper(db, sys);
+  const doQueue = new Queue('do-sweep', { connection });
+  await doQueue.upsertJobScheduler('do-sweep', { pattern: '* * * * *' }, { name: 'do.sweep', data: {} });
+  const doWorker = new Worker('do-sweep', async () => doSweeper.run(), { connection, concurrency: 1 });
+  doWorker.on('failed', (job, err) => console.error('do sweep failed', err.message));
+
   const events = new Queue('events', { connection });
   const dispatcher = new OutboxDispatcher(sys, {
     publish: async (e) => { await events.add(e.type, e, { jobId: e.eventId, removeOnComplete: 1000 }); },
   });
   dispatcher.start();
 
-  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await app.close(); process.exit(0); };
+  const shutdown = async () => { dispatcher.stop(); await inboxWorker.close(); await importWorker.close(); await integrityWorker.close(); await sweepWorker.close(); await doWorker.close(); await app.close(); process.exit(0); };
   process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 }
 bootstrap();
