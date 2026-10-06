@@ -15,6 +15,13 @@ jobs:
       - run: pnpm typecheck
       # Integration tests start a real MongoDB replica set (mongodb-memory-server); no mocks.
       - run: pnpm test
+      - name: Build web
+        run: pnpm --filter @leaddesk/web build
+        env: { API_URL: 'http://127.0.0.1:3300' }
+      - name: Browser tests (real API + Chromium)
+        run: |
+          npx --prefix apps/web playwright install --with-deps chromium
+          pnpm --filter @leaddesk/web e2e
       - name: Secret scan
         uses: trufflesecurity/trufflehog@main
         with: { extra_args: --only-verified }
