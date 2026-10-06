@@ -39,7 +39,7 @@ describe('sample data', () => {
     await as(T, () => new DemoDataService(db).load());
     const id = String(((await as(T, () => db.repos.leads.findOne({}))) as any)._id);
     await expect(as(T, () => new MessagingService(db, keys, reg).send({ leadId: id, channel: 'sms', body: 'hi', idempotencyKey: 'demo-send-0001' }))).rejects.toMatchObject({ code: 'demo_lead' });
-    await expect(as(T, () => new TelephonyService(db, keys, reg, { put: async () => undefined, signedUrl: async () => '', delete: async () => undefined, deletePrefix: async () => undefined }).dial(id))).rejects.toMatchObject({ code: 'demo_lead' });
+    await expect(as(T, () => new TelephonyService(db, keys, reg, { put: async () => undefined, get: async () => null, signedUrl: async () => '', delete: async () => undefined, deletePrefix: async () => undefined }).dial(id))).rejects.toMatchObject({ code: 'demo_lead' });
     expect(await as(T, () => db.repos.enrollments.count({}))).toBe(0); // no first-touch automation for sample leads
   });
 

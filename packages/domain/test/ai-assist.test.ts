@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConnectorRegistry, type AiRequest, type Connector } from '@leaddesk/connectors-core';
 import { LocalKeyService } from '@leaddesk/crypto';
 import { migrateUp, runAsSystem, runWithTenant, TenantDbRouter } from '@leaddesk/db';
-import { AiService, ConnectionService, LeadService, MessagingService, seedPreset } from '../src';
+import { AiService, ConnectionService, LeadService, MessagingService, RetentionService, seedPreset } from '../src';
 
 let rs: MongoMemoryReplSet; let router: TenantDbRouter; let db: any; let keys: LocalKeyService; let leads: LeadService;
 const seen: AiRequest[] = [];
@@ -171,7 +171,7 @@ describe('revival', () => {
     const fresh = await newLead(T, { name: 'Fresh Fernandes' }); await quiet(T, fresh, 2);
     reply(j({ message: 'Hi Quiet, still looking at 3 BHKs in Pune? Happy to share new options.', channel: 'whatsapp', reason: 'Asked about 3 BHK a month ago, no follow-up since.', confidence: 0.7 }));
     expect((await as(T, () => svc().revivePending())).proposed).toBe(1);
-    const s: any = (await as(T, () => db.repos.aiSuggestions.find({ type: 'revival' })))[0];
+    const s: any = ((await as(T, () => db.repos.aiSuggestions.find({ type: "revival" }))) as any[])[0];
     expect(String(s.leadId)).toBe(quietLead);
     expect(await as(T, () => db.repos.messages.count({ direction: 'out' }))).toBe(0);
     await as(T, () => svc().accept(String(s._id)));
@@ -201,5 +201,79 @@ describe('scoring guidance', () => {
     const second: any = await as(T, () => svc().score(id));
     expect(seen[seen.length - 1].system).toContain('<business_rules>\nBudgets above 80 lakh are hot.\n</business_rules>');
     expect(String(second._id)).not.toBe(String(first._id)); expect(second.payload.score).toBe(90);
+  });
+});
+
+describe('call review (transcription + QA)', () => {
+  const store = new Map<string, { bytes: Buffer; contentType: string }>();
+  const fakeStore = { put: async (k: string, b: Buffer, c: string) => { store.set(k, { bytes: b, contentType: c }); }, get: async (k: string) => store.get(k) ?? null, signedUrl: async () => '', delete: async () => undefined, deletePrefix: async () => undefined } as any;
+  const stt = { texts: [] as (string | Error)[], seen: [] as any[] };
+  const sttAi: Connector = { ...fakeAi, manifest: { ...fakeAi.manifest, id: 'fake-stt', capabilities: ['ai.chat', 'ai.stt'] }, async transcribe(_c, req) { stt.seen.push(req); const t = stt.texts.shift(); if (t === undefined) throw new Error('unscripted'); if (t instanceof Error) throw t; return { text: t, language: 'hi', model: 'whisper-test' }; } };
+  const reg2 = new ConnectorRegistry().register(sttAi);
+  const svc2 = () => new AiService(db, keys, reg2, { now: () => clock.t, store: fakeStore });
+  const qa = { summary: 'Asha asked about 3 BHK; agent agreed to call back Friday.', customerIntent: 'Buy 3 BHK', objections: ['Price is high'], commitments: ['Agent calls Friday 6 PM'], nextStep: 'Call Friday', checks: { greeted: true, identifiedSelf: true, askedNeed: true, agreedNextStep: true, pushy: false, madeUnapprovedPromise: false }, score: 82, coaching: 'Ask about budget earlier in the call.', flags: [], confidence: 0.8 };
+  async function mk(slug: string, o: { consent?: boolean; qa?: number } = {}) {
+    const t: any = await runAsSystem('test', () => db.models.Tenant.create({ name: slug, slug, timezone: 'Asia/Kolkata' })); const id = String(t._id);
+    await as(id, async () => { await seedPreset(db.repos, 'real_estate'); await new ConnectionService(db, keys, reg2).create({ provider: 'fake-stt', name: 'AI', credentials: { apiKey: 'k-12345678' } }); await svc2().updateSettings({ enabled: true, features: { call_qa: o.qa ?? 1 }, callAnalysisConsent: o.consent ?? true }); });
+    return id;
+  }
+  async function call(t: string, leadId: string, extra: Record<string, unknown> = {}) {
+    const key = `rec/${Math.random()}.mp3`; store.set(key, { bytes: Buffer.from('FAKEAUDIO'), contentType: 'audio/mpeg' });
+    return String((await as(t, () => db.repos.callSessions.create({ leadId, agentId: '65f000000000000000000001', state: 'ended', startedAt: new Date(clock.t.getTime() - 3600_000), endedAt: new Date(clock.t.getTime() - 3500_000), durationS: 95, recordingObjectKey: key, ...extra })) as any)._id);
+  }
+  it('needs the feature on and the workspace\'s explicit consent before any audio leaves the platform', async () => {
+    const T = await mk('c0', { consent: false }); const id = await newLead(T); const c = await call(T, id);
+    await expect(as(T, () => svc2().analyzeCall(c))).rejects.toMatchObject({ code: 'consent_required' });
+    expect(stt.seen).toHaveLength(0);
+    await as(T, () => svc2().updateSettings({ callAnalysisConsent: true, features: { call_qa: 0 } }));
+    await expect(as(T, () => svc2().analyzeCall(c))).rejects.toMatchObject({ code: 'ai_disabled' });
+  });
+  it('transcribes, masks numbers before the review model sees the text, stores transcript + review, and is idempotent', async () => {
+    const T = await mk('c1'); const id = await newLead(T); const c = await call(T, id);
+    stt.texts.push('Namaste, main Rahul bol raha hoon Skyline se. Aap ka number 9812345678 hai na? Aap 3 BHK dekh rahe the. Main Friday shaam 6 baje call karunga.');
+    reply(j(qa));
+    const a = await as(T, () => svc2().analyzeCall(c));
+    expect(a).toMatchObject({ status: 'done', qa: { score: 82 }, model: 'openai/gpt-oss-120b', transcribeModel: 'whisper-test' }); expect(a.transcript).toContain('9812345678'); // the stored transcript is the record
+    const sent = seen[seen.length - 1].user; expect(sent).not.toContain('9812345678'); expect(sent).toContain('[PHONE]'); expect(sent).toContain('<transcript>');
+    expect(stt.seen[stt.seen.length - 1]).toMatchObject({ contentType: 'audio/mpeg', filename: expect.stringMatching(/\.mp3$/) });
+    const again = await as(T, () => svc2().analyzeCall(c)); expect(again.qa.score).toBe(82); expect(stt.seen).toHaveLength(1); // no second transcription
+    const list = await as(T, () => svc2().callReviews()); expect(list[0]).toMatchObject({ callId: c, score: 82, coaching: expect.stringContaining('budget') }); expect(JSON.stringify(list)).not.toContain('Namaste'); // the list carries no transcript
+    expect((await as(T, () => svc2().callAnalysis(c))).transcript).toContain('Namaste');
+    expect(await as(T, () => db.repos.audit.count({ action: 'ai.call_analysed' }))).toBe(1);
+  });
+  it('refuses unrecorded and very short calls, and a failed transcription can be retried', async () => {
+    const T = await mk('c2'); const id = await newLead(T);
+    const noRec = String(((await as(T, () => db.repos.callSessions.create({ leadId: id, agentId: '65f000000000000000000001', state: 'ended', durationS: 90 }))) as any)._id);
+    await expect(as(T, () => svc2().analyzeCall(noRec))).rejects.toMatchObject({ code: 'no_recording' });
+    const short = await call(T, id, { durationS: 8 }); await expect(as(T, () => svc2().analyzeCall(short))).rejects.toMatchObject({ code: 'too_short' });
+    const c = await call(T, id);
+    stt.texts.push(Object.assign(new Error('boom'), { status: 503 }));
+    await expect(as(T, () => svc2().analyzeCall(c))).rejects.toMatchObject({ code: 'ai_unavailable' });
+    expect(((await as(T, () => db.repos.callSessions.findById(c))) as any).analysis.status).toBe('failed');
+    stt.texts.push('Thoda sa baat hui, main kal call karunga aap ko, theek hai?'); reply(j(qa));
+    expect((await as(T, () => svc2().analyzeCall(c))).status).toBe('done');
+  });
+  it('the sweep picks recent recorded calls once, and retention removes the transcript with the recording', async () => {
+    const T = await mk('c3'); const id = await newLead(T); const c = await call(T, id, { endedAt: new Date(clock.t.getTime() - 1000) });
+    stt.texts.push('Hello, this is a test call about a flat in Pune and the budget is around eighty lakh.'); reply(j(qa));
+    expect((await as(T, () => svc2().callQaPending())).analysed).toBe(1);
+    expect((await as(T, () => svc2().callQaPending())).analysed).toBe(0);
+    await as(T, () => db.repos.callSessions.updateOne({ _id: c }, { $set: { startedAt: new Date(clock.t.getTime() - 400 * 86_400_000) } }));
+    await as(T, () => new RetentionService(db, fakeStore, () => clock.t).run());
+    const after: any = await as(T, () => db.repos.callSessions.findById(c));
+    expect(after.recordingObjectKey).toBeNull(); expect(after.analysis.transcript).toBeUndefined(); expect(after.analysis.qa.score).toBe(82); // the review stays, the spoken words do not
+  });
+});
+
+describe('digest insight', () => {
+  it('turns aggregate figures into a labelled summary, sends no names or contact data, and never fails the digest', async () => {
+    const T = await mkTenant('n1');
+    reply(j({ headline: 'Response times slipped', bullets: ['Median response was 14 min, up from 6 min', '3 follow-ups were missed'], watch: 'Untouched leads are piling up' }));
+    const out = await as(T, () => svc().digestInsight({ day: '2026-03-09', kpis: { responseMedianS: 840 }, counts: { leads: 12 }, leakage: { untouched: 4 }, trend: [] }));
+    expect(out).toMatchObject({ headline: 'Response times slipped' });
+    expect(seen[seen.length - 1].user).toContain('"responseMedianS":840'); expect(seen[seen.length - 1].system).toMatch(/never compute new percentages/);
+    reply(new Error('provider down')); expect(await as(T, () => svc().digestInsight({ day: 'd', kpis: {}, counts: {}, leakage: {} }))).toBeNull();
+    reply('not json at all', 'still not json'); expect(await as(T, () => svc().digestInsight({ day: 'd', kpis: {}, counts: {}, leakage: {} }))).toBeNull();
+    const off = await mkTenant('n2', { insight: 0 }); expect(await as(off, () => svc().digestInsight({ day: 'd', kpis: {}, counts: {}, leakage: {} }))).toBeNull();
   });
 });

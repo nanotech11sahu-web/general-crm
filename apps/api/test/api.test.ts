@@ -1651,3 +1651,52 @@ describe('AI assistants API (phase 9: knowledge base, drafting, duplicates)', ()
     expect((await request(http).get('/v1/ai/knowledge').set(auth(a1)).expect(200)).body).toHaveLength(0);
   });
 });
+
+describe('call review API (phase 9: transcription + QA, opt-in)', () => {
+  const ai = { replies: [] as string[], transcripts: [] as string[], uploads: 0 };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url);
+    if (u.hostname !== 'api.groq.com') return resp(404, {});
+    if (u.pathname.endsWith('/models')) return resp(200, { data: [{ id: 'openai/gpt-oss-20b' }, { id: 'openai/gpt-oss-120b' }] });
+    if (u.pathname.endsWith('/audio/transcriptions')) { ai.uploads++; return resp(200, { text: ai.transcripts.shift() ?? '', language: 'en', duration: 61 }); }
+    if (u.pathname.endsWith('/chat/completions')) { const b = JSON.parse(init.body); const t = ai.replies.shift(); return t === undefined ? resp(500, {}) : resp(200, { model: b.model, choices: [{ message: { content: t } }], usage: { prompt_tokens: 50, completion_tokens: 10 } }); }
+    return resp(404, {});
+  };
+  it('refuses without consent, lets managers review calls in their scope, hides transcripts from agents, and audits viewing', async () => {
+    providerFetch = fx;
+    const { OBJECT_STORE } = await import('../src/do/do.module'); const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const store: any = app.get(OBJECT_STORE, { strict: false }); const db: any = app.get(TENANT_DB, { strict: false });
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'qa-owner@x.io', password: 'correct-horse-9', name: 'Quinn', tenantName: 'QA Co', industryPreset: 'real_estate' }).expect(201);
+    const owner = o.body.accessToken; const tid = o.body.tenantId;
+    const mk = async (email: string, role: string) => { const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role }).expect(201); const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email.split('@')[0], password: 'agent-pass-123' }).expect(201); return { tok: r.body.accessToken as string, id: (await request(http).get('/v1/me').set(auth(r.body.accessToken))).body.userId as string }; };
+    const agent = await mk('qa-a@x.io', 'agent'); const mgr = await mk('qa-m@x.io', 'manager');
+    const team = (await request(http).post('/v1/teams').set(auth(owner)).send({ name: 'QA Team' }).expect(201)).body.id;
+    for (const u of [agent, mgr]) await request(http).patch(`/v1/users/${u.id}/profile`).set(auth(owner)).send({ teamId: team }).expect(200);
+    await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'ai-groq', name: 'Groq', credentials: { apiKey: 'gsk_' + 'x'.repeat(30) } }).expect(201);
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ enabled: true, features: { call_qa: 1 } }).expect(200);
+    const lead = (await request(http).post('/v1/leads').set(auth(owner)).send({ name: 'Call Chandra', contacts: [{ value: '9812366601' }] }).expect(201)).body.leadId;
+    await request(http).post(`/v1/leads/${lead}/assign`).set(auth(owner)).send({ ownerId: agent.id }).expect(201);
+    const key = `${tid}/rec-qa.mp3`; await store.put(key, Buffer.from('FAKEAUDIO'), 'audio/mpeg');
+    const call: any = await runWithTenant(tid, () => db.repos.callSessions.create({ leadId: lead, agentId: agent.id, state: 'ended', startedAt: new Date(Date.now() - 600_000), endedAt: new Date(Date.now() - 500_000), durationS: 90, recordingObjectKey: key }));
+    const id = String(call._id);
+    await request(http).post(`/v1/ai/calls/${id}/analyze`).set(auth(mgr.tok)).expect(409).expect((r) => expect(r.body.code).toBe('consent_required'));
+    expect(ai.uploads).toBe(0); // nothing left the platform
+    await request(http).put('/v1/ai/settings').set(auth(mgr.tok)).send({ callAnalysisConsent: true }).expect(403); // managers cannot grant consent for the workspace
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ callAnalysisConsent: true }).expect(200).expect((r) => expect(r.body.callAnalysisConsent).toBe(true));
+    await request(http).post(`/v1/ai/calls/${id}/analyze`).set(auth(agent.tok)).expect(403);
+    ai.transcripts.push('Hello Chandra, this is Dev from Skyline calling about the 3 BHK enquiry. I will call you again Friday evening to share the brochure.');
+    ai.replies.push(JSON.stringify({ summary: 'Intro call; agent promised a Friday call with the brochure.', customerIntent: 'Buy 3 BHK', objections: [], commitments: ['Call Friday evening'], nextStep: 'Call Friday', checks: { greeted: true, identifiedSelf: true, askedNeed: false, agreedNextStep: true, pushy: false, madeUnapprovedPromise: false }, score: 74, coaching: 'Ask about budget and timeline.', flags: [], confidence: 0.8 }));
+    const a = (await request(http).post(`/v1/ai/calls/${id}/analyze`).set(auth(mgr.tok)).expect(201)).body;
+    expect(a).toMatchObject({ status: 'done', qa: { score: 74, checks: { askedNeed: false } } });
+    expect(ai.uploads).toBe(1);
+    await request(http).post(`/v1/ai/calls/${id}/analyze`).set(auth(mgr.tok)).expect(201); expect(ai.uploads).toBe(1); // idempotent
+    const reviews = (await request(http).get('/v1/ai/call-reviews').set(auth(mgr.tok)).expect(200)).body;
+    expect(reviews).toEqual([expect.objectContaining({ callId: id, score: 74 })]); expect(JSON.stringify(reviews)).not.toContain('Skyline');
+    await request(http).get('/v1/ai/call-reviews').set(auth(agent.tok)).expect(403);
+    expect((await request(http).get(`/v1/ai/calls/${id}/analysis`).set(auth(mgr.tok)).expect(200)).body.transcript).toContain('Skyline');
+    await request(http).get(`/v1/ai/calls/${id}/analysis`).set(auth(agent.tok)).expect(403);
+    const audit = (await request(http).get('/v1/audit').query({ action: 'ai.transcript_viewed' }).set(auth(owner))).body;
+    void audit; expect(await runWithTenant(tid, () => db.repos.audit.count({ action: 'ai.transcript_viewed' }))).toBe(1);
+  });
+});

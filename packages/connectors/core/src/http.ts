@@ -2,7 +2,7 @@
  * Hardened outbound HTTP for connectors (spec §8): fixed allow-listed hosts (so a hostile
  * paging URL can't pivot to internal addresses), timeouts, bounded retries and body size.
  */
-export type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; text(): Promise<string>; arrayBuffer?(): Promise<ArrayBuffer>; headers?: { get(name: string): string | null } }>;
+export type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; text(): Promise<string>; arrayBuffer?(): Promise<ArrayBuffer>; headers?: { get(name: string): string | null } }>;
 
 export class HttpError extends Error {
   constructor(public readonly status: number, message: string, public readonly body?: any) { super(message); this.name = 'HttpError'; }
@@ -33,7 +33,7 @@ export function createHttp(o: HttpOptions) {
       } catch (e: any) { throw e instanceof HttpError ? e : new HttpError(0, e?.name === 'AbortError' ? 'Download timed out' : String(e?.message ?? e)); }
       finally { clearTimeout(timer); }
     },
-    async json<T = any>(url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<T> {
+    async json<T = any>(url: string, init: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array } = {}): Promise<T> {
       const u = new URL(url);
       assertAllowed(u);
       let last: unknown;

@@ -7,6 +7,8 @@ export interface ObjectStore {
   put(key: string, bytes: Buffer, contentType: string): Promise<void>;
   /** Short-lived URL a browser can open without credentials. */
   signedUrl(key: string, ttlSeconds: number): Promise<string>;
+  /** Server-side read (call analysis). */
+  get(key: string): Promise<{ bytes: Buffer; contentType: string } | null>;
   /** Erasure and retention: remove one object (idempotent). */
   delete(key: string): Promise<void>;
   /** Tenant deletion: remove everything under a key prefix (idempotent). */
@@ -34,6 +36,7 @@ export class FsObjectStore implements ObjectStore {
     await writeFile(p, bytes);
     await writeFile(`${p}.type`, contentType);
   }
+  async get(key: string) { try { const p = this.path(key); return { bytes: await readFile(p), contentType: await readFile(`${p}.type`, 'utf8').catch(() => 'audio/mpeg') }; } catch { return null; } }
   async delete(key: string) { const p = this.path(key); await rm(p, { force: true }); await rm(`${p}.type`, { force: true }); }
   async deletePrefix(prefix: string) { await rm(this.path(prefix.replace(/\/?$/, '/')).replace(/\/$/, ''), { recursive: true, force: true }); }
   private sign(payload: string) { return createHmac('sha256', this.secret).update(payload).digest('base64url'); }
@@ -70,6 +73,7 @@ export class S3ObjectStore implements ObjectStore {
     this.presign = pre.getSignedUrl; this.cmds = s3;
   }
   async put(key: string, bytes: Buffer, contentType: string) { await this.init(); await this.client.send(new this.cmds.PutObjectCommand({ Bucket: this.o.bucket, Key: key, Body: bytes, ContentType: contentType, ServerSideEncryption: this.o.endpoint ? undefined : 'AES256' })); }
+  async get(key: string) { await this.init(); try { const r = await this.client.send(new this.cmds.GetObjectCommand({ Bucket: this.o.bucket, Key: key })); return { bytes: Buffer.from(await r.Body.transformToByteArray()), contentType: String(r.ContentType ?? 'audio/mpeg') }; } catch { return null; } }
   async delete(key: string) { await this.init(); await this.client.send(new this.cmds.DeleteObjectCommand({ Bucket: this.o.bucket, Key: key })); }
   async deletePrefix(prefix: string) {
     await this.init(); let token: string | undefined;

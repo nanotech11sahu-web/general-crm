@@ -251,7 +251,7 @@ export class PulseService {
   }
 
   /** Yesterday's numbers + leakage + top/bottom agents, delivered in-app to managers/owners (dedupe: once per local day). */
-  async sendDigest(): Promise<{ sent: boolean; day: string }> {
+  async sendDigest(o: { insight?: (i: { day: string; kpis: unknown; counts: unknown; leakage: unknown; trend: unknown }) => Promise<{ headline: string; bullets: string[]; watch?: string } | null> } = {}): Promise<{ sent: boolean; day: string }> {
     const s = await this.settings(); const now = this.now();
     const today = startOfLocalDay(now, s.tz); const yStart = new Date(today.getTime() - DAY);
     const day = localDay(new Date(yStart.getTime() + 12 * 3600_000), s.tz); // yesterday's local date
@@ -262,8 +262,13 @@ export class PulseService {
     const per = [];
     for (const m of mem) { const x = await this.metricsFor(w.from, w.to, s, m.userId); if (x.counts.calls || x.counts.tasksDue) per.push({ name: names.get(String(m.userId))?.name ?? 'Unknown', calls: x.counts.calls, followUpPct: x.metrics.followUpPct }); }
     per.sort((a, b) => b.calls - a.calls);
-    const payload = { day, kpis: y.kpis, counts: y.counts, leakage: y.leakage, topAgents: per.slice(0, 3), bottomAgents: per.length > 3 ? per.slice(-3).reverse() : [], text: this.digestText(day, y, per) };
+    const payload: Record<string, unknown> = { day, kpis: y.kpis, counts: y.counts, leakage: y.leakage, topAgents: per.slice(0, 3), bottomAgents: per.length > 3 ? per.slice(-3).reverse() : [], text: this.digestText(day, y, per) };
     const before = await this.r.notifications.count({ kind: 'pulse.digest', dedupeKey: `pulse-digest:${day}` });
+    if (before === 0 && o.insight) {
+      // optional, labelled, and bounded: the digest goes out with or without it
+      const ins = await Promise.race([o.insight({ day, kpis: y.kpis, counts: y.counts, leakage: y.leakage, trend: await this.trend(7) }).catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 12_000))]);
+      if (ins) { payload.insight = ins; payload.text = `${payload.text}\n\nAI-written summary: ${ins.headline}\n${ins.bullets.map((b) => `• ${b}`).join('\n')}${ins.watch ? `\nWatch: ${ins.watch}` : ''}`; }
+    }
     await this.notifier.notify({ kind: 'pulse.digest', audience: 'managers', payload, dedupeKey: `pulse-digest:${day}` });
     return { sent: before === 0, day };
   }
@@ -276,13 +281,13 @@ export class PulseService {
   }
 
   /** Worker entry (hourly): for each tenant, once its local digest hour has passed, roll up yesterday and send the digest. */
-  static async sweepAll(db: TenantDb, sys: SystemOps, now: () => Date = () => new Date()) {
+  static async sweepAll(db: TenantDb, sys: SystemOps, now: () => Date = () => new Date(), insight?: NonNullable<Parameters<PulseService['sendDigest']>[0]>['insight']) {
     const { runWithTenant } = await import('@leaddesk/db');
     let sent = 0;
     for (const t of (await sys.pulseTenants()) as any[]) {
       const tz = t.timezone ?? 'Asia/Kolkata'; const hour = t.settings?.pulse?.digestHour ?? DEFAULTS.digestHour;
       if (localHour(now(), tz) < hour) continue;
-      try { if ((await runWithTenant(String(t._id), () => new PulseService(db, now).sendDigest())).sent) sent++; } catch { /* one tenant must not stop the others */ }
+      try { if ((await runWithTenant(String(t._id), () => new PulseService(db, now).sendDigest({ insight }))).sent) sent++; } catch { /* one tenant must not stop the others */ }
     }
     return { sent };
   }

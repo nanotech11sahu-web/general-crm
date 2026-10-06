@@ -5,9 +5,10 @@ import { ApiError, api, refresh } from '../../lib/api';
 
 const FEATURES: [string, string, boolean][] = [
   ['assessment', 'New-lead assessment', true], ['summary', 'Lead summaries', true], ['autofill', 'Auto-fill fields', true], ['scoring', 'Lead scoring', true],
-  ['reply_draft', 'Draft replies (you send them)', false], ['duplicate', 'Duplicate detection', false], ['inbound_intel', 'Read every new reply (runs in the background)', true], ['revival', 'Suggest re-engaging quiet leads (runs in the background)', false], ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
+  ['reply_draft', 'Draft replies (you send them)', false], ['duplicate', 'Duplicate detection', false], ['inbound_intel', 'Read every new reply (runs in the background)', true], ['revival', 'Suggest re-engaging quiet leads (runs in the background)', false], ['insight', 'AI-written line in the daily digest (numbers only)', false], ['call_qa', 'Call transcription and review', false], ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
 ];
-interface Settings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<string, number>; scoringGuidance?: string; revivalDays?: number }
+interface Settings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<string, number>; scoringGuidance?: string; revivalDays?: number; callAnalysisConsent?: boolean }
+interface Review { callId: string; leadId: string; startedAt: string; durationS?: number; status: string; score: number | null; summary: string | null; flags: string[]; coaching: string | null }
 interface Kb { _id: string; title: string; text: string; active: boolean }
 interface Usage { used: number; cap: number; features: { feature: string; requests: number; failures: number }[] }
 
@@ -15,9 +16,9 @@ interface Usage { used: number; cap: number; features: { feature: string; reques
 export default function AiSettings() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [s, setS] = useState<Settings | null>(null); const [u, setU] = useState<Usage | null>(null); const [msg, setMsg] = useState<string | null>(null); const [forbidden, setForbidden] = useState(false);
-  const [kb, setKb] = useState<Kb[]>([]); const [nk, setNk] = useState({ title: '', text: '' });
+  const [reviews, setReviews] = useState<Review[]>([]); const [kb, setKb] = useState<Kb[]>([]); const [nk, setNk] = useState({ title: '', text: '' });
   const load = useCallback(async () => {
-    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); setKb(await api<Kb[]>('/v1/ai/knowledge').catch(() => [])); }
+    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); setKb(await api<Kb[]>('/v1/ai/knowledge').catch(() => [])); setReviews(await api<Review[]>('/v1/ai/call-reviews').catch(() => [])); }
     catch (e) { if (e instanceof ApiError && e.status === 401) router.replace('/login'); }
   }, [router]);
   useEffect(() => { (async () => { if (!(await refresh())) { router.replace('/login'); return; } const me = await api<{ role: string }>('/v1/me'); if (!['owner', 'admin'].includes(me.role)) setForbidden(true); setReady(true); await load(); })(); }, [router, load]);
@@ -52,9 +53,14 @@ export default function AiSettings() {
         <p className="reason">AI never contacts leads, and every automatic change is logged. Features that create work for people always need a tap. Background features start off.</p>
         <label htmlFor="guide">What makes a good lead for you? (used when scoring)</label>
         <textarea id="guide" maxLength={600} defaultValue={s.scoringGuidance ?? ''} placeholder="e.g. Budget above 80 lakh is hot. Leads from referrals are warmer than portals." onBlur={(e) => { if (e.target.value !== (s.scoringGuidance ?? '')) void save({ scoringGuidance: e.target.value }); }} />
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 15, color: 'inherit' }}><input type="checkbox" data-testid="call-consent" style={{ width: 20, minHeight: 20, marginTop: 2 }} checked={!!s.callAnalysisConsent} onChange={(e) => save({ callAnalysisConsent: e.target.checked })} />
+          <span>I confirm that people on recorded calls are told they are recorded, and I agree that call recordings are sent to my AI provider for transcription and review. (Needed before call review can run.)</span></label>
         <label htmlFor="rev">Call a lead “quiet” after (days)</label>
         <input id="rev" type="number" min={7} max={90} defaultValue={s.revivalDays ?? 14} onBlur={(e) => { const n = Number(e.target.value); if (n !== s.revivalDays) void save({ revivalDays: n }); }} />
       </section>
+      {reviews.length > 0 && (<section className="card" data-testid="call-reviews"><h2>Call reviews</h2>
+        <ul className="list">{reviews.map((r) => (<li key={r.callId} style={{ display: 'block' }}><b>{r.score !== null ? `${r.score}/100` : r.status}</b> · {new Date(r.startedAt).toLocaleString()}{r.durationS ? ` · ${Math.round(r.durationS / 60)} min` : ''}<br /><span className="reason">{r.summary}</span>{r.coaching && <><br /><span className="reason">Coaching: {r.coaching}</span></>}{r.flags.length > 0 && <p className="err">{r.flags.join(' · ')}</p>}
+          <button style={{ minHeight: 32, padding: '0 10px', marginTop: 6 }} onClick={async () => { const a = await api<{ transcript?: string }>(`/v1/ai/calls/${r.callId}/analysis`); window.alert(a.transcript ?? 'The transcript has expired with the recording.'); }}>Read transcript</button></li>))}</ul></section>)}
       <section className="card" data-testid="knowledge"><h2>Knowledge base</h2>
         <p className="reason">Facts the reply drafter may use: projects, prices, timings, FAQs. It is told to use nothing else, and figures it invents are flagged before you send.</p>
         <ul className="list">{kb.map((k) => (<li key={k._id}><span><b>{k.title}</b><br /><span className="reason">{k.text.slice(0, 120)}{k.text.length > 120 ? '…' : ''}</span></span><span><button style={{ minHeight: 32, padding: '0 10px' }} onClick={async () => { await api(`/v1/ai/knowledge/${k._id}`, { method: 'DELETE' }); await load(); }}>Delete</button></span></li>))}</ul>

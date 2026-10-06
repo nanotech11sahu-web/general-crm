@@ -153,6 +153,20 @@ describe('pulse analytics on a known data set', () => {
     expect(await as(U2, () => db.repos.notifications.count({ kind: 'pulse.digest' }))).toBe(1);
   });
 
+
+  it('the digest can carry a labelled AI summary, and goes out unchanged when the summary fails or is too slow', async () => {
+    const later = (d: number) => new PulseService(db, () => new Date(NOW.getTime() + d * 86_400_000));
+    const ok = await as(T, () => later(1).sendDigest({ insight: async (i) => { expect(Object.keys(i).sort()).toEqual(['counts', 'day', 'kpis', 'leakage', 'trend']); return { headline: 'Follow-ups slipped', bullets: ['3 follow-ups were missed'], watch: 'Untouched leads' }; } }));
+    expect(ok.sent).toBe(true);
+    const n1: any = (await as(T, () => db.repos.notifications.find({ kind: 'pulse.digest', dedupeKey: `pulse-digest:${ok.day}` })))[0];
+    expect(n1.payload.text).toContain('AI-written summary: Follow-ups slipped'); expect(n1.payload.text).toContain('• 3 follow-ups were missed'); expect(n1.payload.insight.watch).toBe('Untouched leads');
+    const bad = await as(T, () => later(2).sendDigest({ insight: async () => { throw new Error('provider down'); } }));
+    expect(bad.sent).toBe(true);
+    const n2: any = (await as(T, () => db.repos.notifications.find({ kind: 'pulse.digest', dedupeKey: `pulse-digest:${bad.day}` })))[0];
+    expect(n2.payload.text).not.toContain('AI-written'); expect(n2.payload.insight).toBeUndefined();
+    let called = 0; const again = await as(T, () => later(2).sendDigest({ insight: async () => { called++; return null; } }));
+    expect(again.sent).toBe(false); expect(called).toBe(0); // a digest already sent today does not spend an AI request
+  });
   it('another tenant sees none of this tenant\'s numbers', async () => {
     const k: any = await as(U2, () => svc().kpis('30d'));
     expect(k.counts.leads).toBe(0); expect(k.metrics.responseMedianS).toBeNull();

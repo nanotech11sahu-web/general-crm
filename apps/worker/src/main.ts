@@ -70,15 +70,15 @@ async function bootstrap() {
   await periodic('do', { pattern: '* * * * *' }, () => new DoSweeper(db, sys).run());
   await periodic('sla', { every: 30_000 }, () => new SlaSweeper(db, sys).run());
   await periodic('cadence', { every: 30_000 }, () => new CadenceSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
-  await periodic('pulse', { pattern: '5 * * * *' }, () => new PulseSweeper(db, sys).run());
-  await periodic('ai', { every: 60_000 }, () => new AiSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
+  const store = objectStoreFromEnv();
+  await periodic('pulse', { pattern: '5 * * * *' }, () => new PulseSweeper(db, sys, app.get(KEY_SERVICE), registry).run());
+  await periodic('ai', { every: 60_000 }, () => new AiSweeper(db, sys, app.get(KEY_SERVICE), registry, store).run());
   await periodic('ops', { every: 300_000 }, () => new OpsSweeper(db, sys).run());
   const payments = paymentProviderFromEnv(process.env);
   const mailer = createSmtpMailer() ?? new NullMailer();
   await periodic('mail', { every: 60_000 }, () => new MailSweeper(db, sys, mailer, process.env.PUBLIC_APP_URL ?? 'http://localhost:3400').runAll()); // billing/connection alerts and the daily digest, by email
   await periodic('billing', { every: 60_000 }, () => BillingService.sweepAll(db, sys, payments)); // retry provider events whose first processing failed
   await periodic('billing-reminders', { pattern: '15 * * * *' }, () => BillingService.sweepAll(db, sys, payments, { reminders: true })); // trial ending / ended / payment failing, once each
-  const store = objectStoreFromEnv();
   await periodic('retention', { pattern: '30 3 * * *' }, () => RetentionService.sweepAll(db, sys, store)); // nightly: recordings, soft-deleted leads, workspaces past their deletion grace period
 
   const events = new Queue('events', { connection });

@@ -10,7 +10,7 @@ const ctx = (config: any = { wabaId: '1234567', phoneNumberId: '7654321' }): Con
 
 function fake(h: (path: string, init: any) => any): { fetch: FetchLike; calls: { path: string; method: string; body: any }[] } {
   const calls: { path: string; method: string; body: any }[] = [];
-  return { calls, fetch: async (url, init) => { const u = new URL(url); const path = u.pathname.replace(/^\/v26\.0\//, '') + u.search; calls.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(init.body) : undefined }); return h(path, init); } };
+  return { calls, fetch: async (url, init) => { const u = new URL(url); const path = u.pathname.replace(/^\/v26\.0\//, '') + u.search; calls.push({ path, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined }); return h(path, init); } };
 }
 const mk = (f: FetchLike) => createWhatsAppCloud({ appId: 'APP', appSecret: 'sec', verifyToken: 'vt', fetch: f });
 

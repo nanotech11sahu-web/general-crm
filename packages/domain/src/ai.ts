@@ -9,6 +9,7 @@ import { DoService, validateNextAction } from './do';
 import { DomainError, notFound } from './errors';
 import { LeadService } from './lead-service';
 import { localDay } from './pulse';
+import type { ObjectStore } from './storage';
 
 export const AI_FEATURES = ['import_mapping', 'summary', 'autofill', 'next_action', 'scoring', 'nl_search', 'assessment', 'reply_draft', 'inbound_intel', 'duplicate', 'revival', 'insight', 'call_qa', 'autopilot'] as const;
 /** Features that start OFF and need a deliberate decision: they spend quota in the background or send audio/messages outward. */
@@ -16,12 +17,12 @@ export const OPT_IN_FEATURES: ReadonlySet<string> = new Set(['revival', 'inbound
 export type AiFeature = (typeof AI_FEATURES)[number];
 /** 0 off · 1 suggest (default) · 2 assist-auto (low-risk lead metadata only). Level 3 (autopilot) is not built. */
 export type Level = 0 | 1 | 2;
-export interface AiSettings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<AiFeature, Level>; scoringGuidance: string; revivalDays: number }
+export interface AiSettings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<AiFeature, Level>; scoringGuidance: string; revivalDays: number; callAnalysisConsent: boolean }
 export const PROMPT_VERSION = 'v1';
 const AUTO_APPLY_OK: ReadonlySet<string> = new Set(['summary', 'autofill', 'scoring', 'assessment', 'inbound_intel']); // never contacts a lead, never creates work for a person
 const TIER: Record<AiFeature, 'fast' | 'smart'> = { import_mapping: 'fast', nl_search: 'fast', autofill: 'fast', scoring: 'fast', next_action: 'fast', summary: 'smart', assessment: 'smart', reply_draft: 'smart', inbound_intel: 'fast', duplicate: 'fast', revival: 'smart', insight: 'smart', call_qa: 'smart', autopilot: 'smart' };
 const MAX_TOKENS: Record<AiFeature, number> = { import_mapping: 1500, nl_search: 1200, autofill: 1500, scoring: 1500, next_action: 1500, summary: 1500, assessment: 3000, reply_draft: 1800, inbound_intel: 1200, duplicate: 1500, revival: 1800, insight: 1500, call_qa: 3000, autopilot: 1800 };
-const DEFAULT_SETTINGS: AiSettings = { enabled: false, killSwitch: false, dailyCap: 200, scoringGuidance: '', revivalDays: 14, features: Object.fromEntries(AI_FEATURES.map((f) => [f, OPT_IN_FEATURES.has(f) ? 0 : 1])) as Record<AiFeature, Level> };
+const DEFAULT_SETTINGS: AiSettings = { enabled: false, killSwitch: false, dailyCap: 200, scoringGuidance: '', revivalDays: 14, callAnalysisConsent: false, features: Object.fromEntries(AI_FEATURES.map((f) => [f, OPT_IN_FEATURES.has(f) ? 0 : 1])) as Record<AiFeature, Level> };
 
 /** Phones and e-mails never leave the platform (spec §12: mask before sending, minimum context). */
 export function maskPii(text: string): string {
@@ -55,6 +56,12 @@ export const Schemas = {
   inbound_intel: z.object({ intent: z.enum(['interested', 'price_query', 'schedule_visit', 'callback_request', 'not_interested', 'opt_out_request', 'complaint', 'spam', 'other']), sentiment: z.enum(['positive', 'neutral', 'negative']), urgency: z.enum(['high', 'normal', 'low']), summary: z.string().min(3).max(240), suggestedAction: z.string().max(240), confidence: z.number().min(0).max(1) }),
   duplicate: z.object({ verdicts: z.array(z.object({ candidate: z.number().int().min(0).max(9), same: z.enum(['yes', 'maybe', 'no']), reason: z.string().max(200) })).max(10) }),
   revival: z.object({ message: z.string().min(5).max(300), channel: z.enum(['whatsapp', 'call', 'sms']), reason: z.string().min(5).max(160), confidence: z.number().min(0).max(1) }),
+  call_qa: z.object({
+    summary: z.string().min(5).max(500), customerIntent: z.string().max(200).default(''),
+    objections: z.array(z.string().max(160)).max(6).default([]), commitments: z.array(z.string().max(200)).max(6).default([]), nextStep: z.string().max(200).optional(),
+    checks: z.object({ greeted: z.boolean(), identifiedSelf: z.boolean(), askedNeed: z.boolean(), agreedNextStep: z.boolean(), pushy: z.boolean(), madeUnapprovedPromise: z.boolean() }),
+    score: z.number().int().min(0).max(100), coaching: z.string().max(300), flags: z.array(z.string().max(160)).max(6).default([]), confidence: z.number().min(0).max(1),
+  }),
   insight: z.object({ headline: z.string().min(5).max(160), bullets: z.array(z.string().min(5).max(220)).min(1).max(4), watch: z.string().max(220).optional() }),
 };
 export type NlFilter = z.infer<typeof Schemas.nl_search>['filter'];
@@ -72,7 +79,7 @@ export class AiService {
   private readonly conns: ConnectionService;
   private readonly leads: LeadService;
   private readonly modelCache = new Map<string, { at: number; ids: string[] }>();
-  constructor(private readonly db: TenantDb, keys: KeyService, private readonly registry: ConnectorRegistry, private readonly o: { now?: () => Date; models?: { fast?: string; smart?: string } } = {}) {
+  constructor(private readonly db: TenantDb, keys: KeyService, private readonly registry: ConnectorRegistry, private readonly o: { now?: () => Date; models?: { fast?: string; smart?: string }; store?: ObjectStore } = {}) {
     this.conns = new ConnectionService(db, keys, registry);
     this.leads = new LeadService(db);
   }
@@ -86,7 +93,7 @@ export class AiService {
     const t = await this.tenant(); const s = t?.settings?.ai ?? {};
     return { ...DEFAULT_SETTINGS, ...s, features: { ...DEFAULT_SETTINGS.features, ...(s.features ?? {}) }, tz: t?.timezone ?? 'Asia/Kolkata' };
   }
-  async updateSettings(p: Partial<Pick<AiSettings, 'enabled' | 'killSwitch' | 'dailyCap' | 'scoringGuidance' | 'revivalDays'>> & { features?: Partial<Record<AiFeature, number>> }) {
+  async updateSettings(p: Partial<Pick<AiSettings, 'enabled' | 'killSwitch' | 'dailyCap' | 'scoringGuidance' | 'revivalDays' | 'callAnalysisConsent'>> & { features?: Partial<Record<AiFeature, number>> }) {
     const set: Record<string, unknown> = {};
     if (typeof p.enabled === 'boolean') {
       if (p.enabled) await new BillingService(this.db, () => this.now()).assertFeature('ai'); // plan must include AI
@@ -97,6 +104,7 @@ export class AiService {
     if (p.dailyCap !== undefined) { if (!Number.isInteger(p.dailyCap) || p.dailyCap < 0 || p.dailyCap > 100_000) throw new DomainError('invalid_settings', 'dailyCap must be 0 to 100000'); set['settings.ai.dailyCap'] = p.dailyCap; }
     if (p.scoringGuidance !== undefined) { if (typeof p.scoringGuidance !== 'string' || p.scoringGuidance.length > 600) throw new DomainError('invalid_settings', 'Scoring guidance must be text up to 600 characters'); set['settings.ai.scoringGuidance'] = p.scoringGuidance.trim(); }
     if (p.revivalDays !== undefined) { if (!Number.isInteger(p.revivalDays) || p.revivalDays < 7 || p.revivalDays > 90) throw new DomainError('invalid_settings', 'revivalDays must be 7 to 90'); set['settings.ai.revivalDays'] = p.revivalDays; }
+    if (typeof p.callAnalysisConsent === 'boolean') set['settings.ai.callAnalysisConsent'] = p.callAnalysisConsent;
     const errors: Record<string, string> = {};
     for (const [f, lvl] of Object.entries(p.features ?? {})) {
       if (!(AI_FEATURES as readonly string[]).includes(f)) { errors[f] = 'unknown feature'; continue; }
@@ -487,6 +495,88 @@ export class AiService {
     return { proposed };
   }
 
+
+  // ---------- manager insight wording (numbers in, three sentences out) ----------
+  /** Aggregate figures only (no names, no contact data). Never throws: a digest must not wait for, or fail because of, AI. */
+  async digestInsight(input: { day: string; kpis: unknown; counts: unknown; leakage: unknown; trend?: unknown }): Promise<z.infer<typeof Schemas.insight> | null> {
+    try {
+      const s = await this.settings();
+      if (!s.enabled || s.killSwitch || s.features.insight === 0) return null;
+      if (await new BillingService(this.db, () => this.now()).restricted()) return null;
+      const user = `<lead_data>\n${JSON.stringify({ day: input.day, kpis: input.kpis, counts: input.counts, leakage: input.leakage, last7Days: input.trend ?? [] })}\n</lead_data>`;
+      const { data } = await this.call('insight', Schemas.insight, SYSTEM('Write the manager\'s one-glance read of yesterday for a lead-handling team, from these figures only: a headline (what stands out), 1-4 short bullets (what changed vs the last days, where leads are leaking, one concrete thing to do today) and optionally one thing to watch. Quote figures exactly as given; never compute new percentages or invent causes. Times are seconds unless named otherwise. JSON: {"headline", "bullets": [string], "watch": string}.'), user);
+      return data;
+    } catch { return null; }
+  }
+
+  // ---------- call transcription + review (opt-in; audio leaves the platform) ----------
+  /**
+   * Needs the feature on AND the workspace's explicit consent flag (recordings are sent to the AI provider, and the people on the
+   * call must have been told they are recorded). Transcript and review are stored on the call and expire with the recording.
+   */
+  async analyzeCall(callId: string): Promise<any> {
+    const s = await this.settings();
+    if (!s.callAnalysisConsent) throw new DomainError('consent_required', 'Turn on call analysis in AI settings first: recordings are sent to your AI provider for transcription', undefined, 409);
+    const { day } = await this.gate('call_qa');
+    const call: any = await this.r.callSessions.findById(callId);
+    if (!call) throw notFound('Call');
+    if (call.analysis?.status === 'done') return call.analysis;
+    if (!call.recordingObjectKey) throw new DomainError('no_recording', 'This call has no recording to analyse', undefined, 409);
+    if ((call.durationS ?? 0) < 20) throw new DomainError('too_short', 'Calls under 20 seconds are not analysed', undefined, 409);
+    const store = this.o.store; if (!store) throw new DomainError('storage_unavailable', 'Recordings are not readable here', undefined, 503);
+    const claimed = await this.r.callSessions.updateOne({ _id: call._id, $or: [{ 'analysis.status': { $exists: false } }, { 'analysis.status': 'failed' }, { 'analysis.status': 'processing', 'analysis.at': { $lt: new Date(this.now().getTime() - 10 * 60_000) } }] }, { $set: { analysis: { status: 'processing', at: this.now() } } });
+    if (claimed.matchedCount !== 1) throw new DomainError('in_progress', 'This call is already being analysed', undefined, 409);
+    const fail = async (e: any, code: string, message: string) => { await this.r.callSessions.updateOne({ _id: call._id }, { $set: { analysis: { status: 'failed', error: code, at: this.now() } } }); throw e instanceof DomainError ? e : new DomainError(code, message, undefined, 502); };
+    try {
+      const obj = await store.get(call.recordingObjectKey);
+      if (!obj) return await fail(null, 'recording_missing', 'The recording file is no longer available');
+      const conn: any = await this.connection(); const connector = this.registry.get(conn.provider)!;
+      if (!connector.transcribe) return await fail(null, 'no_transcription', 'The connected AI provider cannot transcribe audio');
+      let tr;
+      try { tr = await connector.transcribe(this.conns.contextFor(conn), { audio: obj.bytes, filename: `call-${callId}.${/wav/.test(obj.contentType) ? 'wav' : /ogg/.test(obj.contentType) ? 'ogg' : 'mp3'}`, contentType: obj.contentType }); }
+      catch (e: any) { await this.count(day, 'call_qa', { requests: 1, failures: 1 }); return await fail(e, e?.status === 429 ? 'ai_rate_limited' : 'ai_unavailable', 'Transcription failed. Try again later.'); }
+      await this.count(day, 'call_qa', { requests: 1 });
+      const transcript = tr.text.trim().slice(0, 60_000);
+      if (transcript.length < 20) { await this.r.callSessions.updateOne({ _id: call._id }, { $set: { analysis: { status: 'done', transcript, language: tr.language, qa: null, model: tr.model, at: this.now(), note: 'Too little speech to review' } } }); return this.r.callSessions.findById(callId).then((c: any) => c.analysis); }
+      const lead: any = await this.leads.get(String(call.leadId));
+      const user = `${await this.context(lead)}\n<transcript>\n${maskPii(transcript).slice(0, 14_000)}\n</transcript>`;
+      const { data, model } = await this.call('call_qa', Schemas.call_qa, SYSTEM('Review this sales call between an agent and a lead for the team manager. Summarise it, name the lead\'s intent, objections and any commitments either side made, the agreed next step, and check: greeted, identifiedSelf (agent said who they are/which company), askedNeed, agreedNextStep, pushy, madeUnapprovedPromise (price/discount/date promised without authority). Score the call 0-100 on professionalism and progress, and give ONE specific coaching tip. Only use what is in <transcript>; the transcript may mix Indian languages. Flag anything a manager must see (abuse, legal threats, mis-selling). JSON keys: summary, customerIntent, objections[], commitments[], nextStep, checks{greeted,identifiedSelf,askedNeed,agreedNextStep,pushy,madeUnapprovedPromise}, score, coaching, flags[], confidence.'), user, `${callId}:${transcript.length}`);
+      const analysis = { status: 'done', transcript, language: tr.language, qa: data, model, transcribeModel: tr.model, at: this.now() };
+      await this.r.callSessions.updateOne({ _id: call._id }, { $set: { analysis } });
+      await this.r.audit.record({ action: 'ai.call_analysed', entity: 'call', entityId: callId, meta: { leadId: String(call.leadId), score: data.score, flags: data.flags.length } });
+      return analysis;
+    } catch (e: any) {
+      if (e instanceof DomainError && e.code === 'consent_required') throw e;
+      const cur: any = await this.r.callSessions.findById(callId);
+      if (cur?.analysis?.status === 'processing') await this.r.callSessions.updateOne({ _id: call._id }, { $set: { analysis: { status: 'failed', error: e?.code ?? 'failed', at: this.now() } } });
+      throw e;
+    }
+  }
+  /** Managers' review list: newest analysed calls with scores and flags (the transcript is fetched per call, not listed). */
+  async callReviews(limit = 30) {
+    const rows: any[] = await this.r.callSessions.find({ 'analysis.status': { $in: ['done', 'failed'] } }, { sort: { startedAt: -1 }, limit: Math.min(limit, 100) });
+    return rows.map((c) => ({ callId: String(c._id), leadId: String(c.leadId), agentId: String(c.agentId), startedAt: c.startedAt, durationS: c.durationS, status: c.analysis.status, score: c.analysis.qa?.score ?? null, summary: c.analysis.qa?.summary ?? c.analysis.note ?? null, flags: c.analysis.qa?.flags ?? [], coaching: c.analysis.qa?.coaching ?? null }));
+  }
+  async callAnalysis(callId: string) {
+    const c: any = await this.r.callSessions.findById(callId);
+    if (!c?.analysis) throw notFound('Call analysis');
+    return { callId, leadId: String(c.leadId), ...c.analysis };
+  }
+  /** Worker: analyse a couple of recent recorded calls per sweep for workspaces that opted in. */
+  async callQaPending(limit = 2): Promise<{ analysed: number }> {
+    const s = await this.settings();
+    if (!s.enabled || s.killSwitch || s.features.call_qa === 0 || !s.callAnalysisConsent || !this.o.store) return { analysed: 0 };
+    if (await new BillingService(this.db, () => this.now()).restricted()) return { analysed: 0 };
+    const since = new Date(this.now().getTime() - 48 * 3600_000);
+    const calls: any[] = await this.r.callSessions.find({ recordingObjectKey: { $type: 'string' }, 'analysis.status': { $exists: false }, endedAt: { $gte: since }, durationS: { $gte: 30 } }, { sort: { endedAt: 1 }, limit });
+    let analysed = 0;
+    for (const c of calls) {
+      try { await this.analyzeCall(String(c._id)); analysed++; }
+      catch (e: any) { if (['ai_limit_reached', 'ai_disabled', 'ai_rate_limited'].includes(e?.code)) break; }
+    }
+    return { analysed };
+  }
+
   /** Natural language -> validated filter JSON -> repository query. The model never sees or writes a database query. */
   async searchFilter(q: string) {
     const [statuses, sources]: any[] = await Promise.all([this.r.statuses.find({}), this.r.sources.find({})]);
@@ -549,14 +639,14 @@ export class AiService {
     }
     return { assessed, skipped };
   }
-  static async sweepAll(db: TenantDb, keys: KeyService, registry: ConnectorRegistry, sys: SystemOps, o: { now?: () => Date } = {}) {
+  static async sweepAll(db: TenantDb, keys: KeyService, registry: ConnectorRegistry, sys: SystemOps, o: { now?: () => Date; store?: ObjectStore } = {}) {
     let assessed = 0;
     for (const t of (await sys.aiTenants()) as any[]) {
       try {
         await runWithTenant(String(t._id), async () => {
           const svc = new AiService(db, keys, registry, o);
           assessed += (await svc.assessPending()).assessed;
-          await svc.intelPending(); await svc.revivePending();
+          await svc.intelPending(); await svc.revivePending(); await svc.callQaPending();
         });
       } catch { /* one tenant must not stop the others */ }
     }

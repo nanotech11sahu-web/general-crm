@@ -166,7 +166,7 @@ describe('razorpay provider (documented-shape fixtures; not verified live)', () 
   const planIds = { starter: 'plan_S', growth: 'plan_G', scale: 'plan_X' };
   it('creates a subscription with basic auth, quantity and tenant notes; cancel and seat change use the documented calls', async () => {
     const seen: any[] = [];
-    const f: FetchLike = async (url, init) => { seen.push({ url, method: init?.method, headers: init?.headers, body: init?.body ? JSON.parse(init.body) : undefined }); return resp(200, { id: 'sub_123', short_url: 'https://rzp.io/i/abc' }); };
+    const f: FetchLike = async (url, init) => { seen.push({ url, method: init?.method, headers: init?.headers, body: init?.body ? JSON.parse(String(init.body)) : undefined }); return resp(200, { id: 'sub_123', short_url: 'https://rzp.io/i/abc' }); };
     const p = createRazorpay({ keyId: 'rzp_key', keySecret: 'rzp_secret', webhookSecret: 'whsec', planIds, fetch: f });
     expect(await p.createSubscription({ plan: 'growth', seats: 6, tenantId: 't1', email: 'o@x.io' })).toEqual({ providerSubscriptionId: 'sub_123', url: 'https://rzp.io/i/abc' });
     expect(seen[0]).toMatchObject({ url: 'https://api.razorpay.com/v1/subscriptions', method: 'POST', body: { plan_id: 'plan_G', quantity: 6, total_count: 120, customer_notify: 1, notes: { tenant_id: 't1', plan: 'growth' } } });

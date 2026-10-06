@@ -496,6 +496,7 @@ export function buildModels(conn: Connection) {
     providerOutcome: String,
     recordingObjectKey: String,
     recordingExpiredAt: Date, // retention removed the file
+    analysis: Schema.Types.Mixed, // { status: processing|done|failed, transcript, language, qa{...}, model, at } (opt-in call review)
   });
 
   /** Single-use OAuth `state` (+ PKCE verifier) bound to tenant/user; consumed on callback, TTL 10 min. */

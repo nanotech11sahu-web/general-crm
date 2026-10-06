@@ -8,7 +8,7 @@ const resp = (status: number, b: any) => ({ ok: status < 400, status, text: asyn
 describe('msg91 sms connector (documented-shape fixtures; not verified live)', () => {
   it('maps the template + variables onto the Flow API and returns the request id', async () => {
     let seen: any;
-    const f: FetchLike = async (url, init) => { seen = { url, headers: init?.headers, body: JSON.parse(init!.body!) }; return resp(200, { type: 'success', message: 'req-123' }); };
+    const f: FetchLike = async (url, init) => { seen = { url, headers: init?.headers, body: JSON.parse(String(init!.body!)) }; return resp(200, { type: 'success', message: 'req-123' }); };
     const r = await createMsg91Sms({ fetch: f }).send!(ctx(), { to: '+919812345678', channel: 'sms', template: { name: 'welcome', language: 'en', variables: ['Asha', 'Skyline'], providerTemplateId: 'tpl-1', dltTemplateId: '1107' } });
     expect(r).toEqual({ providerMessageId: 'req-123' });
     expect(seen.url).toBe('https://control.msg91.com/api/v5/flow');

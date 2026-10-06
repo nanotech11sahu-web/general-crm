@@ -65,6 +65,9 @@ export class MessageRejectedError extends Error {
 export interface AiRequest { model: string; system: string; user: string; maxTokens: number; json?: boolean; reasoningEffort?: 'low' | 'medium' | 'high'; temperature?: number }
 export interface AiResult { text: string; model: string; usage: { promptTokens: number; completionTokens: number } }
 
+export interface TranscribeRequest { audio: Buffer; filename: string; contentType: string; language?: string }
+export interface TranscribeResult { text: string; language?: string; durationS?: number; model: string }
+
 export interface CallRequest { agentNumber: string; leadNumber: string; callbackUrl: string; record?: boolean }
 
 export interface ConnectorContext {
@@ -103,6 +106,8 @@ export interface Connector {
   submitTemplate?(ctx: ConnectorContext, t: { name: string; language: string; category: string; body: string; sampleValues: string[] }): Promise<{ providerTemplateId: string; status: 'approved' | 'rejected' | 'pending' }>;
   /** Chat completion (AI providers). Lead text is untrusted: callers wrap it as data and validate the output. */
   complete?(ctx: ConnectorContext, req: AiRequest): Promise<AiResult>;
+  /** Speech to text for call recordings (AI providers). Audio leaves the platform, so callers require explicit workspace consent. */
+  transcribe?(ctx: ConnectorContext, req: TranscribeRequest): Promise<TranscribeResult>;
   /** Model ids the key can use right now (model lists change; features refuse to run on a missing model). */
   listModels?(ctx: ConnectorContext): Promise<string[]>;
   /** Rings the agent first, then bridges to the lead. The lead's number never reaches the browser. */

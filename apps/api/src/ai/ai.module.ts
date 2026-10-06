@@ -5,12 +5,14 @@ import type { KeyService } from '@leaddesk/crypto';
 import { AiService, DomainError, presentLead } from '@leaddesk/domain';
 import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
 import type { TenantDb } from '@leaddesk/db';
+import type { ObjectStore } from '@leaddesk/domain';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/auth.types';
 import { CurrentUser, RequirePermission } from '../common/guards';
 import { ScopeService } from '../common/scope.service';
 import { ConnectionsModule, REGISTRY } from '../connections/connections.module';
 import { LeadsModule } from '../leads/leads.module';
+import { DoModule, OBJECT_STORE } from '../do/do.module';
 
 class AiSettingsDto {
   @IsOptional() @IsBoolean() enabled?: boolean;
@@ -19,6 +21,7 @@ class AiSettingsDto {
   @IsOptional() @IsObject() features?: Record<string, number>;
   @IsOptional() @IsString() @MaxLength(600) scoringGuidance?: string;
   @IsOptional() @IsInt() @Min(7) @Max(90) revivalDays?: number;
+  @IsOptional() @IsBoolean() callAnalysisConsent?: boolean;
 }
 class DraftDto { @IsOptional() @IsString() @MaxLength(300) instruction?: string }
 class KbDto { @IsString() @MaxLength(120) title!: string; @IsString() @MaxLength(2000) text!: string; @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[]; @IsOptional() @IsBoolean() active?: boolean }
@@ -28,8 +31,8 @@ class SearchDto { @IsString() @MinLength(2) @MaxLength(300) q!: string }
 @Injectable()
 export class AiFacade {
   readonly svc: AiService;
-  constructor(@Inject(TENANT_DB) readonly db: TenantDb, @Inject(KEY_SERVICE) keys: KeyService, @Inject(REGISTRY) registry: ConnectorRegistry, readonly scope: ScopeService, readonly audit: AuditService) {
-    this.svc = new AiService(db, keys, registry);
+  constructor(@Inject(TENANT_DB) readonly db: TenantDb, @Inject(KEY_SERVICE) keys: KeyService, @Inject(REGISTRY) registry: ConnectorRegistry, @Inject(OBJECT_STORE) store: ObjectStore, readonly scope: ScopeService, readonly audit: AuditService) {
+    this.svc = new AiService(db, keys, registry, { store });
   }
   async visibleLead(u: AuthUser, id: string) {
     const l: any = await this.db.repos.leads.findOne({ _id: id, deletedAt: null });
@@ -92,6 +95,28 @@ export class AiController {
   @Post('leads/:id/revive') @RequirePermission('leads.write')
   async revive(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.revive(id); }
 
+  // ---- call review (opt-in): managers only, because it exposes what was said on a call ----
+  @Get('call-reviews') @RequirePermission('calls.listen')
+  async callReviews(@CurrentUser() u: AuthUser) {
+    const rows = await this.f.svc.callReviews();
+    const out = [] as typeof rows;
+    for (const r of rows) { try { await this.f.visibleLead(u, r.leadId); out.push(r); } catch { /* not in this manager's scope */ } }
+    return out;
+  }
+  @Post('calls/:id/analyze') @RequirePermission('calls.listen')
+  async analyzeCall(@CurrentUser() u: AuthUser, @Param('id') id: string) {
+    const c: any = await this.f.db.repos.callSessions.findById(id); if (!c) throw new DomainError('not_found', 'Call not found', undefined, 404);
+    await this.f.visibleLead(u, String(c.leadId));
+    const a = await this.f.svc.analyzeCall(id); await this.f.audit.record({ action: 'ai.call_analysis_requested', entity: 'call', entityId: id });
+    return a;
+  }
+  @Get('calls/:id/analysis') @RequirePermission('calls.listen')
+  async callAnalysis(@CurrentUser() u: AuthUser, @Param('id') id: string) {
+    const a: any = await this.f.svc.callAnalysis(id); await this.f.visibleLead(u, a.leadId);
+    await this.f.audit.record({ action: 'ai.transcript_viewed', entity: 'call', entityId: id });
+    return a;
+  }
+
   // ---- knowledge base: facts the drafter may rely on (admins write, everyone who can reply may read) ----
   @Get('knowledge') @RequirePermission('leads.read')
   knowledge() { return this.f.svc.kbList(); }
@@ -120,5 +145,5 @@ export class AiController {
   }
 }
 
-@Module({ imports: [ConnectionsModule, LeadsModule], controllers: [AiController], providers: [AiFacade] })
+@Module({ imports: [ConnectionsModule, LeadsModule, DoModule], controllers: [AiController], providers: [AiFacade] })
 export class AiModule {}

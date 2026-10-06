@@ -158,7 +158,7 @@ export class RetentionService {
     const s = await this.settings(); const now = this.now();
     let recordings = 0, leads = 0;
     const old: any[] = await this.r.callSessions.find({ recordingObjectKey: { $ne: null }, startedAt: { $lt: new Date(now.getTime() - s.recordingDays * DAY) } }, { limit: 500 });
-    for (const c of old) { await this.store?.delete(c.recordingObjectKey); await this.r.callSessions.updateOne({ _id: c._id }, { $set: { recordingObjectKey: null, recordingExpiredAt: now } }); recordings++; }
+    for (const c of old) { await this.store?.delete(c.recordingObjectKey); await this.r.callSessions.updateOne({ _id: c._id }, { $set: { recordingObjectKey: null, recordingExpiredAt: now }, $unset: { 'analysis.transcript': 1 } }); recordings++; }
     const gone: any[] = await this.r.leads.find({ deletedAt: { $lt: new Date(now.getTime() - s.softDeletedLeadDays * DAY) } }, { limit: 200, projection: { _id: 1 } });
     for (const l of gone) { await new PrivacyService(this.db, this.store, () => now).eraseLead(String(l._id), { reason: 'retention' }); leads++; }
     return { recordings, leads };

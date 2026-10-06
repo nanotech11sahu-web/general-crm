@@ -8,7 +8,7 @@ const resp = (status: number, b: any) => ({ ok: status < 400, status, text: asyn
 describe('exotel connector (documented-shape fixtures; not verified live)', () => {
   it('rings the agent first via Calls/connect with basic auth, recording and a terminal callback', async () => {
     let seen: any;
-    const f: FetchLike = async (url, init) => { seen = { url, headers: init?.headers, body: new URLSearchParams(init!.body!) }; return resp(200, { Call: { Sid: 'call-sid-1', Status: 'queued' } }); };
+    const f: FetchLike = async (url, init) => { seen = { url, headers: init?.headers, body: new URLSearchParams(String(init!.body!)) }; return resp(200, { Call: { Sid: 'call-sid-1', Status: 'queued' } }); };
     const r = await createExotel({ fetch: f }).startCall!(ctx(), { agentNumber: '+919900000001', leadNumber: '+919812345678', callbackUrl: 'https://hooks.example/hooks/telephony-exotel/pub?token=whtok', record: true });
     expect(r).toEqual({ providerCallId: 'call-sid-1' });
     expect(seen.url).toBe('https://api.exotel.com/v1/Accounts/acme1/Calls/connect.json');
