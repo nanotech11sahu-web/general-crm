@@ -48,6 +48,10 @@ async function main() {
   // Test-only seeding endpoint (browser tests cannot reach the real SMS/WhatsApp providers, so an inbound reply is planted directly).
   const router = new TenantDbRouter(url); const db = await router.connect();
   createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/expire-trial') { // lets the billing browser test end the e2e workspace's trial
+      runWithTenant(owner.tenantId, () => db.repos.subscriptions.updateOne({}, { $set: { trialEndsAt: new Date(Date.now() - 1000) } })).then(() => res.end('{"ok":true}')).catch((e: unknown) => { res.statusCode = 500; res.end(String(e)); });
+      return;
+    }
     if (req.method !== 'POST' || req.url !== '/inbound-reply') { res.statusCode = 404; res.end(); return; }
     (async () => {
       const lead = await j('/v1/leads', { method: 'POST', token: owner.accessToken, body: { name: 'Reply Rani', city: 'Nashik', contacts: [{ value: '9812345699' }] } });

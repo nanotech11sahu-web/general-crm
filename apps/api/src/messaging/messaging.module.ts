@@ -104,6 +104,7 @@ export class MessagingController {
   @Post('messages/launch') @RequirePermission('leads.write')
   async launch(@CurrentUser() u: AuthUser, @Body() b: SendDto) {
     const lead = await this.f.visibleLead(u, b.leadId);
+    if ((lead.tags ?? []).includes('demo')) throw new DomainError('demo_lead', 'Sample leads cannot be messaged', undefined, 409);
     if ((await this.f.msg.channels())[b.channel].connected) throw new DomainError('use_connected_channel', `${b.channel} is connected: send through the platform`, undefined, 409);
     const phone = (lead.contacts ?? []).find((c: any) => c.kind === 'phone' && !(c.optedOutChannels ?? []).includes(b.channel));
     if (!phone) throw new DomainError('no_phone', 'No reachable phone number (missing or opted out)');

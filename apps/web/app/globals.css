@@ -25,3 +25,6 @@ textarea { min-height: 84px; } label { display: block; font-size: 13px; color: v
 .toast { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 528px; margin: 0 auto; background: var(--ink); color: var(--bg); padding: 12px 16px; border-radius: 12px; }
 .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; }
 .sheet > div { background: var(--card); width: 100%; max-width: 560px; max-height: 92dvh; overflow: auto; border-radius: 18px 18px 0 0; padding: 16px; }
+
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+a.btn.primary { background: var(--accent, #2563eb); color: #fff; border-color: transparent; }

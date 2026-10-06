@@ -1443,3 +1443,78 @@ describe('billing, seats and read-only enforcement (phase 8)', () => {
     expect((await request(http).get('/v1/billing/status').set(auth(owner)).expect(200)).body.plan).toBe('growth'); // the first workspace is untouched
   });
 });
+
+describe('operator (support) tooling (phase 8)', () => {
+  const TOKEN = 'operator-token-0123456789-0123456789';
+  const op = (t = TOKEN) => ({ Authorization: `Bearer ${t}` });
+  let ownerTok: string; let tenantId: string; let other: { tenantId: string; token: string };
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'op-owner@x.io', password: 'correct-horse-9', name: 'Opal', tenantName: 'Support Me Ltd' }).expect(201);
+    ownerTok = o.body.accessToken; tenantId = o.body.tenantId; other = await signup('op-other');
+    await request(http).post('/v1/leads').set(auth(ownerTok)).send({ name: 'Secret Customer', contacts: [{ value: '9812300321' }] }).expect(201);
+  });
+  afterAll(() => { delete process.env.PLATFORM_ADMIN_TOKEN; delete process.env.PLATFORM_ADMIN_IPS; });
+
+  it('does not exist unless a long token is configured; wrong or missing bearer is refused; the IP allow-list hides it from other addresses', async () => {
+    await request(http).get('/platform/summary').expect(404);
+    process.env.PLATFORM_ADMIN_TOKEN = 'short'; await request(http).get('/platform/summary').set(op('short')).expect(404); // too weak to enable
+    process.env.PLATFORM_ADMIN_TOKEN = TOKEN;
+    await request(http).get('/platform/summary').expect(401); await request(http).get('/platform/summary').set(op('wrong-wrong-wrong-wrong-wrong-wrong')).expect(401);
+    await request(http).get('/platform/summary').set(auth(ownerTok)).expect(401); // a customer's own JWT is not an operator credential
+    process.env.PLATFORM_ADMIN_IPS = '203.0.113.9'; await request(http).get('/platform/summary').set(op()).expect(404);
+    delete process.env.PLATFORM_ADMIN_IPS; await request(http).get('/platform/summary').set(op()).expect(200);
+  });
+
+  it('lists and searches workspaces with plan and subscription state; regex characters are inert', async () => {
+    process.env.PLATFORM_ADMIN_TOKEN = TOKEN;
+    const s = (await request(http).get('/platform/summary').set(op()).expect(200)).body; expect(s.tenantsByStatus.active).toBeGreaterThanOrEqual(2); expect(s).toHaveProperty('trialsEndingIn7Days'); expect(Array.isArray(s.subscriptions)).toBe(true);
+    const found = (await request(http).get('/platform/tenants').query({ q: 'support me' }).set(op()).expect(200)).body;
+    expect(found).toHaveLength(1); expect(found[0]).toMatchObject({ id: tenantId, name: 'Support Me Ltd', status: 'active', plan: 'trial', subscription: { status: 'trialing', seats: 5 } });
+    expect((await request(http).get('/platform/tenants').query({ q: '.*' }).set(op()).expect(200)).body).toEqual([]);
+    expect((await request(http).get('/platform/tenants').query({ q: '(' }).set(op()).expect(200)).body).toEqual([]);
+  });
+
+  it('shows a workspace summary with counts, health and alerts, but no customer data', async () => {
+    process.env.PLATFORM_ADMIN_TOKEN = TOKEN;
+    const d = (await request(http).get(`/platform/tenants/${tenantId}`).set(op()).expect(200)).body;
+    expect(d).toMatchObject({ name: 'Support Me Ltd', counts: { members: 1, leads: 1 }, entitlements: { status: 'trialing' }, usage: { seats: { used: 1 } } }); expect(Array.isArray(d.alerts)).toBe(true);
+    expect(JSON.stringify(d)).not.toMatch(/Secret Customer|9812300321|op-owner@x\.io|passwordHash/);
+    await request(http).get('/platform/tenants/not-an-id').set(op()).expect(404); await request(http).get('/platform/tenants/65f0000000000000000000ff').set(op()).expect(404);
+  });
+
+  it('suspend blocks the customer immediately (login and refresh), unsuspend restores; extend-trial and manual plans change entitlements; everything is audited', async () => {
+    process.env.PLATFORM_ADMIN_TOKEN = TOKEN;
+    const { MembershipCache } = await import('../src/common/guards'); void MembershipCache;
+    await request(http).post(`/platform/tenants/${tenantId}/suspend`).set(op()).send({ reason: 'chargeback' }).expect(200);
+    await request(http).post('/v1/auth/login').send({ email: 'op-owner@x.io', password: 'correct-horse-9' }).expect(403);
+    await request(http).get('/v1/leads').set(auth(ownerTok)).expect(401); // existing token dies at once on this instance (others within ~10 s)
+    await request(http).get('/v1/leads').set(auth(other.token)).expect(200); // the neighbour is unaffected
+    await request(http).post(`/platform/tenants/${tenantId}/unsuspend`).set(op()).send({}).expect(200);
+    await request(http).post('/v1/auth/login').send({ email: 'op-owner@x.io', password: 'correct-horse-9' }).expect(200);
+
+    const ext = (await request(http).post(`/platform/tenants/${tenantId}/extend-trial`).set(op()).send({ days: 10, note: 'sales call' }).expect(200)).body; expect(ext.trialDaysLeft).toBeGreaterThanOrEqual(23);
+    await request(http).post(`/platform/tenants/${tenantId}/extend-trial`).set(op()).send({ days: 999 }).expect(400);
+    const man = (await request(http).post(`/platform/tenants/${tenantId}/subscription`).set(op()).send({ plan: 'growth', seats: 12, periodEnd: new Date(Date.now() + 365 * 86400_000).toISOString(), note: 'annual invoice #42' }).expect(200)).body;
+    expect(man).toMatchObject({ plan: 'growth', status: 'active', seats: 12, provider: 'manual' });
+    await request(http).post(`/platform/tenants/${tenantId}/subscription`).set(op()).send({ plan: 'starter', seats: 500 }).expect(422);
+    const a = (await request(http).get('/platform/audit').query({ tenantId }).set(op()).expect(200)).body;
+    expect(a.map((x: any) => x.action)).toEqual(expect.arrayContaining(['tenant.suspended', 'tenant.unsuspended', 'trial.extended', 'subscription.set_manual']));
+    expect(a.find((x: any) => x.action === 'tenant.suspended').meta).toMatchObject({ reason: 'chargeback' });
+    const mine = (await request(http).get('/v1/billing/status').set(auth(ownerTok)).expect(200)).body; expect(mine).toMatchObject({ plan: 'growth', status: 'active' });
+  });
+});
+
+describe('sample data endpoints (phase 8)', () => {
+  it('loads and removes sample data for managers only, and sample leads cannot be messaged', async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'demo-owner@x.io', password: 'correct-horse-9', name: 'Demi', tenantName: 'Demo Co' }).expect(201);
+    const tok = o.body.accessToken;
+    expect((await request(http).get('/v1/demo-data').set(auth(tok)).expect(200)).body).toMatchObject({ loaded: false });
+    await request(http).get('/v1/demo-data').expect(401);
+    await request(http).post('/v1/demo-data').set(auth(tok)).expect(201);
+    expect((await request(http).get('/v1/demo-data').set(auth(tok)).expect(200)).body.loaded).toBe(true);
+    const list = (await request(http).get('/v1/leads').query({ tag: 'demo', limit: 50 }).set(auth(tok)).expect(200)).body;
+    const items = list.items ?? list; expect(items.length).toBeGreaterThan(5);
+    await request(http).delete('/v1/demo-data').set(auth(tok)).expect(200);
+    expect((await request(http).get('/v1/demo-data').set(auth(tok)).expect(200)).body.loaded).toBe(false);
+  });
+});

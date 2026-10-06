@@ -126,6 +126,17 @@ export function createSystemOps(m: Models) {
         const f: any = {}; if (q.status) f.status = q.status; if (q.text) f.$or = [{ name: { $regex: q.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }, { slug: { $regex: q.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }];
         return m.Tenant.find(f, { name: 1, slug: 1, plan: 1, status: 1, createdAt: 1, timezone: 1 }).sort({ _id: -1 }).limit(Math.min(q.limit ?? 50, 200)).lean().exec();
       }),
+    operatorSubscriptions: (tenantIds: any[]) => runAsSystem('platform.operator', () => m.Subscription.find({ tenantId: { $in: tenantIds } }).lean().exec()),
+    operatorSummary: (now = new Date()) =>
+      runAsSystem('platform.operator', async () => {
+        const soon = new Date(now.getTime() + 7 * 86_400_000);
+        const [byStatus, byPlan, trialsEnding, pastDue, expired] = await Promise.all([
+          m.Tenant.aggregate([{ $group: { _id: '$status', n: { $sum: 1 } } }]), m.Subscription.aggregate([{ $group: { _id: { plan: '$plan', status: '$status' }, n: { $sum: 1 }, seats: { $sum: '$seats' } } }]),
+          m.Subscription.countDocuments({ status: 'trialing', trialEndsAt: { $gte: now, $lt: soon } }), m.Subscription.countDocuments({ status: 'past_due' }), m.Subscription.countDocuments({ status: 'expired' }),
+        ]);
+        return { tenantsByStatus: Object.fromEntries((byStatus as any[]).map((x) => [x._id, x.n])), subscriptions: (byPlan as any[]).map((x) => ({ plan: x._id.plan, status: x._id.status, workspaces: x.n, seats: x.seats })), trialsEndingIn7Days: trialsEnding, pastDue, expired };
+      }),
+    operatorAuditList: (tenantId?: any, limit = 100) => runAsSystem('platform.operator', () => m.PlatformAudit.find(tenantId ? { tenantId } : {}).sort({ at: -1 }).limit(Math.min(limit, 500)).lean().exec()),
     operatorTenant: (id: any) => runAsSystem('platform.operator', () => m.Tenant.findById(id).lean().exec()),
     operatorSetTenantStatus: (id: any, status: 'active' | 'suspended') => runAsSystem('platform.operator', () => m.Tenant.updateOne({ _id: id, status: { $ne: 'deleted' } }, { $set: { status } }).exec()),
     operatorAudit: (e: { action: string; tenantId?: any; meta?: unknown; ip?: string }) => runAsSystem('platform.operator', () => m.PlatformAudit.create({ ...e, at: new Date() })),

@@ -45,6 +45,7 @@ export class TelephonyService {
   /** `mode` tells the UI what to do: `cloud` => wait for the phone to ring; `tap` => open the dialer with `dialUri`. */
   async dial(leadId: string): Promise<{ mode: 'cloud' | 'tap'; callSessionId: string; dialUri?: string }> {
     const agent = this.actor();
+    if (((await this.leads.get(leadId)).tags ?? []).includes('demo')) throw new DomainError('demo_lead', 'Sample leads cannot be called', undefined, 409);
     const conn = await this.voiceConnection();
     const agentNumber = conn ? this.agentNumber(conn, agent) : null;
     if (!conn || !agentNumber) return { mode: 'tap', ...(await this.doSvc.startCall(leadId)) };

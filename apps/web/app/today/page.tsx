@@ -9,6 +9,7 @@ interface Item { kind: string; leadId: string; leadName: string; reason: string;
 interface Queue { items: Item[]; counts: Record<string, number>; total: number; caughtUp: boolean }
 interface Goal { gamification: boolean; goal?: number; done?: number; streakDays?: number }
 interface Onboarding { steps: { key: string; title: string; hint: string; done: boolean; href: string }[]; done: number; total: number; complete: boolean }
+interface BillingStatus { status: string; planName: string; trialDaysLeft: number | null; restricted: boolean; reason: string | null; cancelAtPeriodEnd: boolean }
 interface Dialing { callSessionId: string; leadId: string; leadName: string; mode: 'cloud' | 'tap'; dialUri?: string }
 
 /** Hands the number to the phone's dialer. Overridable seam so browser tests (which have no dialer) can stub it. */
@@ -31,7 +32,7 @@ export default function Today() {
   const [dialing, setDialing] = useState<Dialing | null>(null); const [sheet, setSheet] = useState<SheetTarget | null>(null);
   const [suggest, setSuggest] = useState<(Suggestion & { leadId: string }) | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [role, setRole] = useState<string>('agent'); const [goal, setGoal] = useState<Goal | null>(null); const [onb, setOnb] = useState<Onboarding | null>(null);
+  const [role, setRole] = useState<string>('agent'); const [goal, setGoal] = useState<Goal | null>(null); const [onb, setOnb] = useState<Onboarding | null>(null); const [bill, setBill] = useState<BillingStatus | null>(null); const [demo, setDemo] = useState<{ loaded: boolean } | null>(null);
   const dialingRef = useRef<Dialing | null>(null); dialingRef.current = dialing;
 
   const say = useCallback((m: string) => { setToast(m); setTimeout(() => setToast((t) => (t === m ? null : t)), 4000); }, []);
@@ -50,7 +51,8 @@ export default function Today() {
       // everything the first screen needs is fetched in parallel, the queue first
       const q = load();
       void api<Outcome[]>('/v1/outcomes').then(setOutcomes).catch(() => undefined);
-      void api<{ role: string }>('/v1/me').then((m) => { setRole(m.role); if (['owner', 'admin'].includes(m.role)) void api<Onboarding>('/v1/onboarding').then(setOnb).catch(() => undefined); }).catch(() => undefined);
+      void api<BillingStatus>('/v1/billing/status').then(setBill).catch(() => undefined);
+      void api<{ role: string }>('/v1/me').then((m) => { setRole(m.role); if (['owner', 'admin'].includes(m.role)) { void api<Onboarding>('/v1/onboarding').then(setOnb).catch(() => undefined); void api<{ loaded: boolean }>('/v1/demo-data').then(setDemo).catch(() => undefined); } }).catch(() => undefined);
       await q;
     })();
     return () => { alive = false; };
@@ -120,6 +122,7 @@ export default function Today() {
         <h1>Today</h1>
         <div className="row" style={{ alignItems: 'center' }}>
           <span className={`pill${live ? ' live' : ''}`} aria-label={live ? 'Live updates on' : 'Live updates off'}>{live ? '● live' : '○ offline'}</span>
+          {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/billing')} style={{ minHeight: 36, padding: '0 12px' }}>Billing</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/settings')} style={{ minHeight: 36, padding: '0 12px' }}>Settings</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ops')} style={{ minHeight: 36, padding: '0 12px' }}>Health</button>}
           {['owner', 'admin'].includes(role) && <button onClick={() => router.push('/ai')} style={{ minHeight: 36, padding: '0 12px' }}>AI</button>}
@@ -130,10 +133,14 @@ export default function Today() {
       </div>
 
       {error && <p className="err" role="alert">{error}</p>}
+      {bill?.restricted && <p className="err" role="alert" data-testid="readonly-banner">{bill.reason ?? 'This workspace is read-only.'} {['owner', 'admin'].includes(role) && <a href="/billing">Open billing</a>}</p>}
+      {bill && !bill.restricted && bill.status === 'trialing' && bill.trialDaysLeft !== null && bill.trialDaysLeft <= 7 && (
+        <p className="reason" data-testid="trial-banner">Free trial: {bill.trialDaysLeft} day{bill.trialDaysLeft === 1 ? '' : 's'} left. {['owner', 'admin'].includes(role) ? <a href="/billing">Choose a plan</a> : 'Ask your admin to choose a plan.'}</p>)}
       {onb && !onb.complete && (
         <section className="card" aria-label="Get set up" data-testid="onboarding"><h2>Get set up ({onb.done}/{onb.total})</h2>
           <ul className="list">{onb.steps.map((st) => <li key={st.key} style={{ opacity: st.done ? 0.55 : 1 }}><span>{st.done ? '✓' : '○'} {st.title}</span>{!st.done && <a href={st.href}>Do it</a>}</li>)}</ul>
           <p className="reason">{onb.steps.find((x) => !x.done)?.hint}</p>
+          {demo && <div className="row"><button onClick={async () => { try { if (demo.loaded) await api('/v1/demo-data', { method: 'DELETE' }); else await api('/v1/demo-data', { method: 'POST' }); setDemo({ loaded: !demo.loaded }); await load(); } catch (e) { setError(e instanceof ApiError ? e.message : 'Could not change sample data'); } }}>{demo.loaded ? 'Remove sample data' : 'Load sample data to look around'}</button></div>}
         </section>
       )}
       {goal?.gamification && goal.goal ? (

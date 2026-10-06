@@ -24,6 +24,8 @@ export class MembershipCache {
   private readonly ttlMs = 10_000;
   constructor(@Inject(TENANT_DB) private readonly db: TenantDb) {}
   invalidate(membershipId: string) { this.m.delete(membershipId); }
+  /** Operator actions (suspend) take effect on this instance immediately; other instances converge within the TTL. */
+  clear() { this.m.clear(); }
   async isActive(tenantId: string, membershipId: string): Promise<boolean> {
     const hit = this.m.get(membershipId);
     if (hit && hit.exp > Date.now()) return hit.active;

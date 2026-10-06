@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Header, HttpCode, Inject, Injectable, Mo
 import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import * as argon2 from 'argon2';
 import type { Response } from 'express';
-import { PrivacyService, RetentionService, TenantDataService, type ObjectStore } from '@leaddesk/domain';
+import { DemoDataService, PrivacyService, RetentionService, TenantDataService, type ObjectStore } from '@leaddesk/domain';
 import { TENANT_DB } from '@leaddesk/platform';
 import { runWithTenant, type TenantDb } from '@leaddesk/db';
 import { AuditService } from '../audit/audit.service';
@@ -21,6 +21,7 @@ export class PrivacyFacade {
   privacy() { return new PrivacyService(this.db, this.store); }
   data() { return new TenantDataService(this.db); }
   retention() { return new RetentionService(this.db, this.store); }
+  demo() { return new DemoDataService(this.db, this.store); }
   async reauth(u: AuthUser, password: string) {
     const user: any = await this.db.models.User.findById(u.userId).lean().exec();
     if (!user?.passwordHash || !(await argon2.verify(user.passwordHash, password))) throw new UnauthorizedException('Password is wrong');
@@ -61,5 +62,14 @@ export class PrivacyController {
   async setRetention(@Body() b: RetentionDto) { const s = await this.f.retention().updateSettings(b); await this.f.audit.record({ action: 'retention.updated', entity: 'tenant', meta: b as any }); return s; }
 }
 
-@Module({ imports: [DoModule], controllers: [PrivacyController], providers: [PrivacyFacade] })
+/** Sample data for the first-run experience: loadable, removable, and never contactable. */
+@Controller('v1/demo-data')
+export class DemoController {
+  constructor(private readonly f: PrivacyFacade) {}
+  @Get() @RequirePermission('tenant.manage') status() { return this.f.demo().status(); }
+  @Post() @RequirePermission('tenant.manage') load() { return this.f.demo().load(); }
+  @Delete() @HttpCode(200) @AllowRestricted() @RequirePermission('tenant.manage') clear() { return this.f.demo().clear(); }
+}
+
+@Module({ imports: [DoModule], controllers: [PrivacyController, DemoController], providers: [PrivacyFacade] })
 export class PrivacyModule {}

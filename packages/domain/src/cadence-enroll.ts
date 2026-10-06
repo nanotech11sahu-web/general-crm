@@ -11,7 +11,7 @@ export interface FirstTouchSettings { enabled: boolean; channel: Channel; templa
 const STOP_FLAG: Record<'reply' | 'connected_call' | 'status_change' | 'opt_out', keyof StopOn> = { reply: 'inboundReply', connected_call: 'connectedCall', status_change: 'statusChange', opt_out: 'optOut' };
 const DEFAULT_STOP: StopOn = { inboundReply: true, connectedCall: true, statusChange: true, optOut: true };
 /** Leads that came in *because they messaged us* are already in conversation: no automated opener. */
-const NO_FIRST_TOUCH_SOURCES = new Set(['manual', 'import', 'api', 'whatsapp', 'whatsapp-cloud', 'sms', 'sms-msg91']);
+const NO_FIRST_TOUCH_SOURCES = new Set(['manual', 'import', 'api', 'demo', 'whatsapp', 'whatsapp-cloud', 'sms', 'sms-msg91']);
 
 /** DB-only half: enrolling and stopping. Safe to call from LeadService/DoService/MessagingService without a cycle. */
 export class CadenceEnroller {

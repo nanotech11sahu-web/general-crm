@@ -34,7 +34,7 @@ export class PrivacyService {
   }
 
   /** Hard-deletes the lead and everything hanging off it. A phone-hash suppression stays so we never contact them again. */
-  async eraseLead(leadId: string, o: { reason?: string } = {}) {
+  async eraseLead(leadId: string, o: { reason?: string; suppress?: boolean } = {}) {
     const lead: any = await this.r.leads.findOne({ _id: leadId });
     if (!lead) throw notFound('Lead');
     const tenantId = requireTenantId(); const counts: Record<string, number> = {};
@@ -43,7 +43,7 @@ export class PrivacyService {
       const convs: any[] = await this.r.conversations.find({ leadId: lead._id }, { projection: { _id: 1 } });
       const calls: any[] = await this.r.callSessions.find({ leadId: lead._id }, { projection: { recordingObjectKey: 1 } });
       for (const c of calls) if (c.recordingObjectKey) recordings.push(c.recordingObjectKey);
-      for (const c of (lead.contacts ?? []).filter((x: any) => x.kind === 'phone')) await this.r.suppressions.updateOne({ hash: PrivacyService.suppressionHash(tenantId, c.valueNorm) }, { $set: { reason: o.reason ?? 'erasure', hash: PrivacyService.suppressionHash(tenantId, c.valueNorm) } }, { upsert: true });
+      if (o.suppress !== false) for (const c of (lead.contacts ?? []).filter((x: any) => x.kind === 'phone')) await this.r.suppressions.updateOne({ hash: PrivacyService.suppressionHash(tenantId, c.valueNorm) }, { $set: { reason: o.reason ?? 'erasure', hash: PrivacyService.suppressionHash(tenantId, c.valueNorm) } }, { upsert: true });
       const del = async (name: string, p: Promise<any>) => { counts[name] = (await p).deletedCount ?? 0; };
       if (convs.length) await del('messages', this.r.messages.deleteMany({ conversationId: { $in: convs.map((c) => c._id) } }));
       await del('conversations', this.r.conversations.deleteMany({ leadId: lead._id }));

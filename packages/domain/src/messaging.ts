@@ -82,6 +82,7 @@ export class MessagingService {
     if (!contact) throw new DomainError('no_phone', 'This lead has no phone number');
     if ((lead.contacts ?? []).some((c: any) => c.kind === 'phone' && (c.optedOutChannels ?? []).includes(i.channel))) throw new DomainError('opted_out', `This lead opted out of ${i.channel} messages`, undefined, 409);
 
+    if ((lead.tags ?? []).includes('demo')) throw new DomainError('demo_lead', 'Sample leads cannot be messaged', undefined, 409);
     if (await new PrivacyService(this.db).isSuppressed(contact.valueNorm)) throw new DomainError('opted_out', 'This person asked to be erased and must not be contacted', undefined, 409);
 
     const existing: any = await this.r.messages.findOne({ idempotencyKey: i.idempotencyKey });
