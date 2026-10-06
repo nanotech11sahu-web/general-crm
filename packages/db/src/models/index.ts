@@ -267,6 +267,16 @@ export function buildModels(conn: Connection) {
     readAt: Date,
   });
 
+  /** Single-use OAuth `state` (+ PKCE verifier) bound to tenant/user; consumed on callback, TTL 10 min. */
+  const OAuthState = make(conn, 'OAuthState', {
+    nonce: { type: String, required: true },
+    userId: ObjectId,
+    provider: { type: String, required: true },
+    codeVerifier: String,
+    meta: Schema.Types.Mixed,
+    expiresAt: { type: Date, required: true },
+  });
+
   const Counter = make(conn, 'Counter', {
     key: { type: String, required: true },
     seq: { type: Number, default: 0 },
@@ -275,7 +285,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

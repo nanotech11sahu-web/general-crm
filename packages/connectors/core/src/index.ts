@@ -30,6 +30,8 @@ export interface ConnectorManifest {
   configFields: FieldDef[];
   capabilities: Capability[];
   webhook?: {
+    /** App-level webhooks (one callback URL per provider app, e.g. Meta) route by payload, not by connection public id. */
+    appLevel?: boolean;
     /** Which credential field holds the signing secret. */
     secretKey: string;
     verify(req: RawRequest, secret: string): boolean;
@@ -56,14 +58,24 @@ export class AuthRevokedError extends Error {
   constructor(message = 'Authorization revoked by provider') { super(message); this.name = 'AuthRevokedError'; }
 }
 
-export interface BackfillLead { externalRef: string; fields: Record<string, unknown>; createdAt?: Date }
+export interface BackfillLead {
+  externalRef: string; fields: Record<string, unknown>; createdAt?: Date;
+  /** Monotonic position inside the source (e.g. sheet row). The platform persists the max as `config.backfillCursor`. */
+  cursor?: number;
+}
+/** Verification may discover things worth persisting (page list, token expiry, rotated tokens). */
+export interface VerifyResult {
+  ok: boolean; detail?: string;
+  patch?: { credentials?: Record<string, string>; config?: Record<string, unknown>; oauthExpiresAt?: Date | null };
+}
 export interface HealthResult { ok: boolean; detail?: string }
 
 export interface Connector {
   manifest: ConnectorManifest;
-  verify(ctx: ConnectorContext): Promise<{ ok: boolean; detail?: string }>;
+  verify(ctx: ConnectorContext): Promise<VerifyResult>;
   health(ctx: ConnectorContext): Promise<HealthResult>;
-  parseWebhook?(raw: unknown): Promise<CanonicalEvent[]>;
+  /** `ctx` lets providers that only send an id (Meta) fetch the full record. */
+  parseWebhook?(raw: unknown, ctx?: ConnectorContext): Promise<CanonicalEvent[]>;
   /** Pull leads created since `since` so gaps left by dropped webhooks can be reconciled. */
   backfill?(ctx: ConnectorContext, since: Date): AsyncIterable<BackfillLead>;
   /** Exchange/refresh the access token; the platform stores the returned credentials encrypted. */
@@ -120,3 +132,4 @@ export const websiteWebhook: Connector = {
 };
 
 export function defaultRegistry() { return new ConnectorRegistry().register(websiteWebhook); }
+export * from './http';

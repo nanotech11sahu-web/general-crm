@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { openSecret, sealSecret, type KeyService } from '@leaddesk/crypto';
-import type { ConnectorContext, ConnectorRegistry, FieldDef } from '@leaddesk/connectors-core';
+import type { ConnectorContext, ConnectorRegistry, FieldDef, VerifyResult } from '@leaddesk/connectors-core';
 import { newObjectId, requireTenantId, type TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
 
@@ -100,12 +100,25 @@ export class ConnectionService {
     const c = await this.get(id);
     if (c.status === 'revoked') throw new DomainError('revoked', 'Connection is revoked; reconnect it first');
     const connector = this.connector(c.provider);
-    let ok = false; let detail: string | undefined;
-    try { ({ ok, detail } = await connector.verify(this.contextFor(c))); } catch (e: any) { detail = String(e?.message ?? e).slice(0, 300); }
+    let ok = false; let detail: string | undefined; let res: VerifyResult | undefined;
+    try { res = await connector.verify(this.contextFor(c)); ({ ok, detail } = res); } catch (e: any) { detail = String(e?.message ?? e).slice(0, 300); }
+    if (ok && res?.patch) await this.applyPatch(c, res.patch);
     await this.recordCheck(c._id, 'verify', ok, detail);
     await this.r.connections.updateOne({ _id: c._id }, { $set: ok ? { status: 'verified', lastVerifiedAt: new Date(), lastError: null } : { lastError: detail ?? 'verification failed' } });
     await this.log(c._id, ok ? 'info' : 'error', ok ? 'Verified' : `Verification failed: ${detail}`);
     return this.view(await this.get(id));
+  }
+
+  /** Persist what verification discovered (pages, rotated tokens, expiry). Credentials are re-sealed. */
+  async applyPatch(c: any, patch: NonNullable<VerifyResult['patch']>) {
+    const set: Record<string, unknown> = {};
+    if (patch.credentials) {
+      const merged = { ...(await this.credentials(c)), ...patch.credentials };
+      Object.assign(set, await this.seal(c._id, merged));
+    }
+    if (patch.config) set.config = { ...(c.config ?? {}), ...patch.config };
+    if (patch.oauthExpiresAt !== undefined) set.oauthExpiresAt = patch.oauthExpiresAt;
+    if (Object.keys(set).length) await this.r.connections.updateOne({ _id: c._id }, { $set: set });
   }
 
   /** Replace credentials: re-verify with the NEW ones first and only swap on success. */

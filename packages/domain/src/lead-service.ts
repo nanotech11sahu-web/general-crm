@@ -8,6 +8,9 @@ export interface IntakeInput {
   source?: { kind: string; name: string };
   campaign?: string; adSet?: string; ad?: string; formName?: string;
   externalRef?: string;
+  metaLeadId?: string;
+  /** Unmapped provider answers; kept on the timeline entry so nothing a lead typed is lost. */
+  raw?: Record<string, string>;
   ownerId?: string;
   city?: string; language?: string; budgetText?: string;
   tags?: string[];
@@ -90,14 +93,14 @@ export class LeadService {
     const lead: any = await this.r.leads.create({
       displayName,
       nameTokens: nameTokens(displayName),
-      statusId: firstStatus?._id, sourceId, externalRef: input.externalRef,
+      statusId: firstStatus?._id, sourceId, externalRef: input.externalRef, metaLeadId: input.metaLeadId,
       campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName,
       ownerId: input.ownerId ? toObjectId(input.ownerId) : undefined, assignedAt: input.ownerId ? new Date() : undefined,
       city: input.city, language: input.language, budgetText: input.budgetText, tags: input.tags ?? [], custom: input.custom ?? {},
       contacts, phoneNorms: this.searchKeys(contacts), lastEnquiryAt: new Date(),
     });
     await this.r.contactIndex.createMany(contacts.map((c) => ({ kind: c.kind, valueNorm: c.valueNorm, leadId: lead._id })));
-    await this.activity(lead._id, 'lead_created', { source: input.source, campaign: input.campaign, externalRef: input.externalRef });
+    await this.activity(lead._id, 'lead_created', { source: input.source, campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName, externalRef: input.externalRef, answers: input.raw && Object.keys(input.raw).length ? input.raw : undefined });
     await this.r.outbox.add('lead.created', String(lead._id), { sourceId: sourceId ? String(sourceId) : null });
     return { outcome: 'created', leadId: String(lead._id) };
   }

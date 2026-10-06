@@ -35,6 +35,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@leaddesk/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors/registry
       '@leaddesk/connectors-core':
         specifier: workspace:*
         version: link:../../packages/connectors/core
@@ -114,6 +117,9 @@ importers:
 
   apps/webhook-ingress:
     dependencies:
+      '@leaddesk/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors/registry
       '@leaddesk/connectors-core':
         specifier: workspace:*
         version: link:../../packages/connectors/core
@@ -172,6 +178,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@leaddesk/connectors':
+        specifier: workspace:*
+        version: link:../../packages/connectors/registry
       '@leaddesk/connectors-core':
         specifier: workspace:*
         version: link:../../packages/connectors/core
@@ -217,6 +226,42 @@ importers:
         version: 10.4.3
 
   packages/connectors/core:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/google-sheets:
+    dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/meta-leadads:
+    dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.5
+
+  packages/connectors/registry:
+    dependencies:
+      '@leaddesk/connector-google-sheets':
+        specifier: workspace:*
+        version: link:../google-sheets
+      '@leaddesk/connector-meta-leadads':
+        specifier: workspace:*
+        version: link:../meta-leadads
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@types/node':
         specifier: ^22.10.0

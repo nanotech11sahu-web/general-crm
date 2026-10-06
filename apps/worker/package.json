@@ -19,7 +19,8 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "@leaddesk/domain": "workspace:*",
-    "@leaddesk/crypto": "workspace:*"
+    "@leaddesk/crypto": "workspace:*",
+    "@leaddesk/connectors": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

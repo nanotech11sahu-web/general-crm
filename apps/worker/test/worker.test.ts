@@ -59,7 +59,7 @@ describe('InboxProcessor', () => {
     const wh: any = reg.get('website-webhook'); const orig = wh.parseWebhook;
     wh.parseWebhook = async () => { throw new Error('provider 503'); };
     try {
-      const p = new InboxProcessor(db, reg, 2);
+      const p = new InboxProcessor(db, reg, undefined, 2);
       const row: any = await mkRow(A);
       await expect(p.process(job(A, row))).rejects.toThrow('provider 503');
       expect(await status(A, row)).toBe('failed');

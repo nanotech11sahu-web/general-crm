@@ -1,7 +1,9 @@
 import type { ConnectorRegistry } from '@leaddesk/connectors-core';
+import type { KeyService } from '@leaddesk/crypto';
 import type { TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
 import { leadFromFields } from './field-map';
+import { ConnectionService } from './connections';
 import { LeadService } from './lead-service';
 
 export type InboxOutcome = { status: 'done' | 'failed' | 'dead'; leads: { outcome: string; leadId?: string }[]; error?: string };
@@ -13,7 +15,12 @@ export type InboxOutcome = { status: 'done' | 'failed' | 'dead'; leads: { outcom
  */
 export class InboxService {
   private readonly leads: LeadService;
-  constructor(private readonly db: TenantDb, private readonly registry: ConnectorRegistry, private readonly maxAttempts = 8) { this.leads = new LeadService(db); }
+  private readonly conns?: ConnectionService;
+  /** `keys` lets providers that only send an id (Meta) fetch the full record with decrypted credentials. */
+  constructor(private readonly db: TenantDb, private readonly registry: ConnectorRegistry, private readonly maxAttempts = 8, keys?: KeyService) {
+    this.leads = new LeadService(db);
+    if (keys) this.conns = new ConnectionService(db, keys, registry);
+  }
   private get r() { return this.db.repos; }
 
   async process(inboxId: string): Promise<InboxOutcome> {
@@ -27,7 +34,7 @@ export class InboxService {
       if (!conn) throw new DomainError('rejected', 'Connection no longer exists');
       const connector = this.registry.get(row.provider);
       if (!connector?.parseWebhook) throw new DomainError('rejected', `No webhook parser for ${row.provider}`);
-      const events = await connector.parseWebhook(row.rawPayload);
+      const events = await connector.parseWebhook(row.rawPayload, this.conns?.contextFor(conn));
       const defs: any[] = await this.r.customFields.find();
       const mapping = parseMapping(conn.config?.fieldMapping);
       const results: InboxOutcome['leads'] = [];

@@ -9,16 +9,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrateUp } from '@leaddesk/db';
 
 let rs: MongoMemoryReplSet; let app: INestApplication; let http: any;
+/** Switchboard so individual tests can script provider (Meta/Google) responses. Documented shapes, not live traffic. */
+let providerFetch: (url: string, init?: any) => Promise<any> = async () => ({ ok: false, status: 404, text: async () => '{}' });
 
 beforeAll(async () => {
   rs = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   process.env.MONGO_URL = rs.getUri('api_test');
   process.env.JWT_ACCESS_SECRET = 'test-access';
   process.env.LOCAL_KEK_BASE64 = randomBytes(32).toString('base64');
+  Object.assign(process.env, { META_APP_ID: 'APP1', META_APP_SECRET: 'meta-secret', META_WEBHOOK_VERIFY_TOKEN: 'vt', GOOGLE_CLIENT_ID: 'gcid', GOOGLE_CLIENT_SECRET: 'gsec', PUBLIC_API_URL: 'https://api.example.test' });
+  delete process.env.PUBLIC_APP_URL;
   const c = await MongoClient.connect(process.env.MONGO_URL); await migrateUp(c.db()); await c.close();
   const { AppModule } = await import('../src/app.module');
   const { configureApp } = await import('../src/setup');
-  const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const { HTTP_FETCH } = await import('../src/connections/connections.module');
+  const mod = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(HTTP_FETCH).useValue((u: string, i?: any) => providerFetch(u, i)).compile();
   app = configureApp(mod.createNestApplication());
   await app.init();
   http = app.getHttpServer();
@@ -365,5 +370,130 @@ describe('notifications (phase 2b)', () => {
     expect((await request(http).get('/v1/notifications').set(auth(other.token)).expect(200)).body).toHaveLength(0);
     expect((await request(http).post(`/v1/notifications/${list[0]._id}/read`).set(auth(agent)).expect(201)).body.ok).toBe(false);
     expect((await request(http).post(`/v1/notifications/${list[0]._id}/read`).set(auth(o.token)).expect(201)).body.ok).toBe(true);
+  });
+});
+
+describe('Meta Lead Ads + Google Sheets end to end (phase 2c, recorded-shape fixtures)', () => {
+  const META_LEAD = { created_time: '2026-03-10T05:00:00+0000', id: '555001', ad_name: 'Ad One', adset_name: 'Pune 25-40', campaign_name: 'Summer Launch', form_id: 'f1',
+    field_data: [{ name: 'full_name', values: ['Anita Desai'] }, { name: 'phone_number', values: ['+919812345678'] }, { name: 'email', values: ['anita@x.io'] }, { name: 'city', values: ['Pune'] }, { name: 'when_do_you_plan_to_buy?', values: ['this_month'] }] };
+  const META_LEAD2 = { ...META_LEAD, id: '555002', field_data: [{ name: 'full_name', values: ['Second Person'] }, { name: 'phone_number', values: ['9811111111'] }] };
+  const SID = 'b'.repeat(32);
+  const subscribed: Record<string, string[]> = { P1: ['leadgen'] };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+
+  const fixtures = async (url: string, init?: any) => {
+    const u = new URL(url); const path = u.pathname.replace(/^\/v26\.0\//, ''); const q = u.searchParams;
+    if (u.hostname === 'oauth2.googleapis.com') {
+      if (q.get('grant_type') === 'refresh_token' || String(init?.body).includes('refresh_token')) return resp(200, { access_token: 'g-at', expires_in: 3600 });
+      return resp(200, { access_token: 'g-at', refresh_token: 'g-refresh-token-1234' });
+    }
+    if (u.hostname === 'sheets.googleapis.com') {
+      if (url.includes('/values/')) return resp(200, { values: [['Name', 'Mobile', 'City'], ['Sheet Asha', '9822200001', 'Pune'], ['', '', ''], ['Sheet Ravi', '9822200002', 'Delhi'], ['Sheet Mina', '9822200003']] });
+      return resp(200, { properties: { title: 'Leads 2026' }, sheets: [{ properties: { title: 'Leads' } }] });
+    }
+    if (path === 'oauth/access_token') return resp(200, { access_token: q.get('grant_type') ? 'meta-long-lived' : 'meta-short', expires_in: 5184000 });
+    if (path === 'debug_token') return resp(200, { data: { is_valid: true, app_id: 'APP1', expires_at: Math.floor(Date.now() / 1000) + 9 * 86400, scopes: ['leads_retrieval', 'pages_manage_metadata', 'pages_show_list', 'pages_read_engagement'] } });
+    if (path === 'me/accounts') return resp(200, { data: [{ id: 'P1', name: 'Acme Realty', access_token: 'ptok1' }, { id: 'P2', name: 'Acme Edu', access_token: 'ptok2' }] });
+    if (path === 'me') return resp(200, { id: '1' });
+    const sub = path.match(/^(P\d)\/subscribed_apps$/);
+    if (sub && !init?.method) return resp(200, { data: subscribed[sub[1]]?.length ? [{ id: 'APP1', subscribed_fields: subscribed[sub[1]] }] : [] });
+    if (sub) { subscribed[sub[1]] = ['leadgen']; return resp(200, { success: true }); }
+    if (path === '555001') return resp(200, META_LEAD);
+    if (path === 'P1/leadgen_forms') return resp(200, { data: [{ id: 'F1', name: 'Site visit form' }] });
+    if (path === 'P2/leadgen_forms') return resp(200, { data: [] });
+    if (path === 'F1/leads') return resp(200, { data: [META_LEAD, META_LEAD2] });
+    return resp(404, { error: { code: 100, message: `unmocked ${path}` } });
+  };
+  const stateOf = (url: string) => new URL(url).searchParams.get('state')!;
+
+  it('connect with Meta: OAuth state is single-use and tenant-bound; verify discovers pages; webhook row becomes a lead with ad attribution', async () => {
+    providerFetch = fixtures;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'meta@x.io', password: 'correct-horse-9', name: 'O', tenantName: 'Meta Co', industryPreset: 'real_estate' }).expect(201);
+    const tok = o.body.accessToken as string;
+    expect((await request(http).get('/v1/connectors').set(auth(tok)).expect(200)).body.map((c: any) => c.id)).toEqual(expect.arrayContaining(['meta-leadads', 'google-sheets']));
+
+    const start = (await request(http).get('/v1/oauth/meta-leadads/start').set(auth(tok)).expect(200)).body;
+    const url = new URL(start.url);
+    expect(url.hostname).toBe('www.facebook.com');
+    expect(url.searchParams.get('scope')).toContain('leads_retrieval');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://api.example.test/v1/oauth/meta-leadads/callback');
+    const state = stateOf(start.url);
+
+    await request(http).get('/v1/oauth/meta-leadads/callback').query({ code: 'x', state: 'bogus' }).expect(400);
+    await request(http).get('/v1/oauth/meta-leadads/callback').query({ code: 'x', state: `${'a'.repeat(24)}.${state.split('.')[1]}` }).expect(400); // wrong tenant prefix
+    const cbk = await request(http).get('/v1/oauth/meta-leadads/callback').query({ code: 'authcode', state }).expect(200);
+    const conn = cbk.body.connection;
+    expect(conn).toMatchObject({ provider: 'meta-leadads', status: 'verified' });
+    expect(conn.config.pageIds).toEqual(['P1', 'P2']);
+    expect(conn.oauthExpiresAt).toBeTruthy();
+    expect(JSON.stringify(conn)).not.toMatch(/meta-long-lived|ptok1/);
+    await request(http).get('/v1/oauth/meta-leadads/callback').query({ code: 'authcode', state }).expect(400); // replayed state
+    const denied = (await request(http).get('/v1/oauth/meta-leadads/start').set(auth(tok)).expect(200)).body.url;
+    await request(http).get('/v1/oauth/meta-leadads/callback').query({ error: 'access_denied', state: stateOf(denied) }).expect(422);
+
+    // simulate the ingress storing a leadgen change, then process it
+    const { TENANT_DB } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const db = app.get(TENANT_DB);
+    const row: any = await runWithTenant(o.body.tenantId, () => db.repos.inbox.create({ connectionId: conn.id, provider: 'meta-leadads', externalEventId: '555001', rawPayload: { leadgen_id: '555001', page_id: 'P1', form_id: 'f1' }, signatureValid: true, status: 'received' }));
+    const done = (await request(http).post(`/v1/inbox/${row._id}/replay`).set(auth(tok)).expect(201)).body;
+    expect(done.status).toBe('done'); expect(done.leads[0].outcome).toBe('created');
+    const leads = (await request(http).get('/v1/leads').set(auth(tok)).expect(200)).body.items;
+    expect(leads[0]).toMatchObject({ displayName: 'Anita Desai', campaign: 'Summer Launch', adSet: 'Pune 25-40', ad: 'Ad One', city: 'Pune', metaLeadId: '555001' });
+    const tl = (await request(http).get(`/v1/leads/${leads[0]._id}/timeline`).set(auth(tok)).expect(200)).body.items;
+    expect(tl.find((a: any) => a.type === 'lead_created').payload.answers['when_do_you_plan_to_buy?']).toBe('this_month');
+
+    // integrity: P2's subscription was never created => heartbeat repairs it; backfill picks up the lead that never arrived by webhook
+    const { IntegrityService } = await import('@leaddesk/domain'); const { KEY_SERVICE } = await import('@leaddesk/platform');
+    const { REGISTRY } = await import('../src/connections/connections.module');
+    const integ = new IntegrityService(db, app.get(KEY_SERVICE), app.get(REGISTRY));
+    const hb = await runWithTenant(o.body.tenantId, () => integ.heartbeat(conn.id));
+    expect(hb).toMatchObject({ status: 'verified', resubscribed: true });
+    expect(subscribed.P2).toEqual(['leadgen']);
+    const bf = await runWithTenant(o.body.tenantId, () => integ.backfill(conn.id, 2));
+    expect(bf).toMatchObject({ seen: 2, missing: 1, ingested: 1, failed: 0 }); // 555001 already received; 555002 recovered
+    expect((await request(http).get('/v1/leads').query({ q: 'second' }).set(auth(tok)).expect(200)).body.items).toHaveLength(1);
+    expect((await runWithTenant(o.body.tenantId, () => db.repos.connections.findById(conn.id)) as any).lastEventAt).toBeTruthy();
+
+    // the other tenant can't see any of it
+    const other = await signup('meta-other');
+    expect((await request(http).get('/v1/connections').set(auth(other.token)).expect(200)).body).toHaveLength(0);
+    await request(http).post(`/v1/connections/${conn.id}/verify`).set(auth(other.token)).expect(404);
+  });
+
+  it('Google Sheets: PKCE consent, spreadsheet config, append-only sync with a persisted row cursor', async () => {
+    providerFetch = fixtures;
+    const o = await signup('sheets-owner');
+    const start = (await request(http).get('/v1/oauth/google-sheets/start').query({ spreadsheetId: SID, sheetName: 'Leads', name: 'Facebook sheet' }).set(auth(o.token)).expect(200)).body;
+    const u = new URL(start.url);
+    expect(u.hostname).toBe('accounts.google.com'); expect(u.searchParams.get('code_challenge')).toBeTruthy(); expect(u.searchParams.get('access_type')).toBe('offline');
+    const conn = (await request(http).get('/v1/oauth/google-sheets/callback').query({ code: 'gcode', state: stateOf(start.url) }).expect(200)).body.connection;
+    expect(conn).toMatchObject({ provider: 'google-sheets', status: 'verified', name: 'Facebook sheet' });
+    expect(conn.config).toMatchObject({ spreadsheetId: SID, spreadsheetTitle: 'Leads 2026', sheetName: 'Leads' });
+    expect(JSON.stringify(conn)).not.toContain('g-refresh-token');
+
+    const { TENANT_DB, KEY_SERVICE } = await import('@leaddesk/platform'); const { runWithTenant } = await import('@leaddesk/db');
+    const { IntegrityService } = await import('@leaddesk/domain'); const { REGISTRY } = await import('../src/connections/connections.module');
+    const db = app.get(TENANT_DB);
+    const integ = new IntegrityService(db, app.get(KEY_SERVICE), app.get(REGISTRY));
+    const first = await runWithTenant(o.tenantId, () => integ.backfill(conn.id, 14));
+    expect(first).toEqual({ seen: 3, missing: 3, ingested: 3, failed: 0 });
+    const names = (await request(http).get('/v1/leads').set(auth(o.token)).expect(200)).body.items.map((l: any) => l.displayName).sort();
+    expect(names).toEqual(['Sheet Asha', 'Sheet Mina', 'Sheet Ravi']);
+    const row = (await runWithTenant(o.tenantId, () => db.repos.connections.findById(conn.id))) as any;
+    expect(row.config.backfillCursor).toBe(5);
+    const second = await runWithTenant(o.tenantId, () => integ.backfill(conn.id, 14));
+    expect(second).toEqual({ seen: 0, missing: 0, ingested: 0, failed: 0 }); // only rows after the cursor are read
+    // a missing spreadsheet id is rejected up front
+    const bad = (await request(http).get('/v1/oauth/google-sheets/start').set(auth(o.token)).expect(200)).body;
+    await request(http).get('/v1/oauth/google-sheets/callback').query({ code: 'gcode', state: stateOf(bad.url) }).expect(422);
+  });
+
+  it('agents cannot start OAuth; unknown/non-OAuth providers are rejected', async () => {
+    const o = await signup('oauth-perm');
+    const inv = await request(http).post('/v1/invitations').set(auth(o.token)).send({ email: 'oauth-agent@x.io', role: 'agent' }).expect(201);
+    const agent = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'A', password: 'agent-pass-123' }).expect(201)).body.accessToken;
+    await request(http).get('/v1/oauth/meta-leadads/start').set(auth(agent)).expect(403);
+    await request(http).get('/v1/oauth/website-webhook/start').set(auth(o.token)).expect(422);
+    await request(http).get('/v1/oauth/nope/start').set(auth(o.token)).expect(422);
   });
 });

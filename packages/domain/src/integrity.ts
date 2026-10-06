@@ -57,7 +57,7 @@ export class IntegrityService {
   private readonly inbox: InboxService;
   constructor(private readonly db: TenantDb, private readonly keys: KeyService, private readonly registry: ConnectorRegistry, private readonly notifier: Notifier = new DbNotifier(db), private readonly now: () => Date = () => new Date()) {
     this.conns = new ConnectionService(db, keys, registry);
-    this.inbox = new InboxService(db, registry);
+    this.inbox = new InboxService(db, registry, 8, keys);
   }
   private get r() { return this.db.repos; }
 
@@ -167,17 +167,19 @@ export class IntegrityService {
     const c = await this.conns.get(connectionId);
     const connector = this.conns.connector(c.provider);
     const stats = { seen: 0, missing: 0, ingested: 0, failed: 0 };
+    let cursor: number | undefined;
     if (!connector.backfill || c.status === 'revoked') return stats;
     const since = new Date(this.now().getTime() - days * 86_400_000);
     try {
       for await (const lead of connector.backfill(this.conns.contextFor(c), since)) {
         stats.seen++;
+        if (lead.cursor !== undefined) cursor = Math.max(cursor ?? 0, lead.cursor);
         const known = await this.r.inbox.findOne({ connectionId: c._id, externalEventId: lead.externalRef })
           ?? await this.r.leads.findOne({ externalRef: lead.externalRef, deletedAt: null });
         if (known) continue;
         stats.missing++;
         try {
-          const row: any = await this.r.inbox.create({ connectionId: c._id, provider: c.provider, eventType: 'backfill', externalEventId: lead.externalRef, rawPayload: { ...lead.fields, id: lead.externalRef }, signatureValid: true, status: 'received', receivedAt: this.now() });
+          const row: any = await this.r.inbox.create({ connectionId: c._id, provider: c.provider, eventType: 'backfill', externalEventId: lead.externalRef, rawPayload: { ...lead.fields, _backfill: true, id: lead.externalRef }, signatureValid: true, status: 'received', receivedAt: this.now() });
           const res = await this.inbox.process(String(row._id));
           if (res.status === 'done') stats.ingested++; else stats.failed++;
         } catch (e: any) {
@@ -189,6 +191,7 @@ export class IntegrityService {
       if (e instanceof AuthRevokedError) { await this.transition(c, 'revoked', [e.message]); return stats; }
       throw e;
     }
+    if (cursor !== undefined) await this.r.connections.updateOne({ _id: c._id }, { $set: { 'config.backfillCursor': cursor } }); // failed rows already sit in Needs attention
     await this.conns.log(c._id, stats.missing ? 'warn' : 'info', `Backfill ${days}d: seen ${stats.seen}, missing ${stats.missing}, ingested ${stats.ingested}, failed ${stats.failed}`);
     await this.conns.recordCheck(c._id, 'backfill', stats.failed === 0, `${days}d seen=${stats.seen} missing=${stats.missing}`);
     return stats;

@@ -48,6 +48,10 @@ export const INDEXES: Idx[] = [
   { collection: 'notifications', keys: { tenantId: 1, audience: 1, userId: 1, createdAt: -1 } },
   { collection: 'notifications', keys: { tenantId: 1, dedupeKey: 1 }, options: { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } } },
   { collection: 'notifications', keys: { createdAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
+  { collection: 'oauthstates', keys: { tenantId: 1, nonce: 1 }, options: { unique: true } },
+  { collection: 'oauthstates', keys: { expiresAt: 1 }, options: { expireAfterSeconds: 0 } },
+  // app-level webhooks (Meta) route by page id: a named system lookup, so it cannot lead with tenantId
+  { collection: 'integrationconnections', keys: { provider: 1, 'config.pageIds': 1 } },
   { collection: 'events', keys: { dispatchedAt: 1, claimedUntil: 1, _id: 1 } },
   { collection: 'events', keys: { tenantId: 1, type: 1, createdAt: -1 } },
   { collection: 'events', keys: { dispatchedAt: 1 }, options: { expireAfterSeconds: 7 * 86400, partialFilterExpression: { dispatchedAt: { $type: 'date' } } } },

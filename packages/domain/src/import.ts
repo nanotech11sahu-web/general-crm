@@ -10,7 +10,7 @@ export const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_COLS = 60;
 
 /** Targets a column can map to. `custom.<key>` is validated against the tenant's field definitions. */
-export const CORE_TARGETS = ['name', 'phone', 'email', 'city', 'language', 'budgetText', 'campaign', 'tags', 'externalRef', 'ignore'] as const;
+export const CORE_TARGETS = ['name', 'phone', 'email', 'city', 'language', 'budgetText', 'campaign', 'adSet', 'ad', 'formName', 'metaLeadId', 'tags', 'externalRef', 'answer', 'ignore'] as const;
 export type Mapping = Record<string, string>; // header -> target
 
 /** Spreadsheet formula-injection stripping: formulas never survive into stored text. */
@@ -78,6 +78,10 @@ export function suggestMappingFor(headers: string[], defs: any[]): Mapping {
   const out: Mapping = {};
   const usedSingle = new Set<string>();
   for (const h of headers) {
+    // canonical keys emitted by connectors map to themselves
+    if (['name', 'phone', 'email', 'city', 'campaign', 'adSet', 'ad', 'formName', 'metaLeadId'].includes(h)) { out[h] = h; continue; }
+    if (h.startsWith('answer.')) { out[h] = 'answer'; continue; }
+    if (h === 'pageId' || h === '_backfill') { out[h] = 'ignore'; continue; }
     const custom = defs.find((d) => d.key.toLowerCase() === h.toLowerCase().replace(/\s+/g, '_') || d.label.toLowerCase() === h.toLowerCase());
     if (custom) { out[h] = `custom.${custom.key}`; continue; }
     const hit = HINTS.find(([t, re]) => re.test(h) && (t === 'phone' || !usedSingle.has(t)));
@@ -94,7 +98,7 @@ export async function validateMapping(db: TenantDb, headers: string[], mapping: 
   for (const [h, t] of Object.entries(mapping)) {
     if (!headers.includes(h)) errors[h] = 'unknown column';
     else if (!(CORE_TARGETS as readonly string[]).includes(t) && !customKeys.has(t)) errors[h] = `unknown target "${t}"`;
-    else if (!['phone', 'email', 'ignore', 'tags'].includes(t) && !t.startsWith('custom.')) {
+    else if (!['phone', 'email', 'ignore', 'tags', 'answer'].includes(t) && !t.startsWith('custom.')) {
       if (singles.has(t)) errors[h] = `"${t}" is already mapped from "${singles.get(t)}"`; else singles.set(t, h);
     }
   }
@@ -112,6 +116,7 @@ export function rowToIntake(headers: string[], row: string[], mapping: Mapping, 
     const v = get(h);
     if (!v || t === 'ignore') continue;
     if (t === 'phone' || t === 'email') input.contacts.push({ kind: t, value: v });
+    else if (t === 'answer') (input.raw ??= {})[h.replace(/^answer\./, '')] = v;
     else if (t === 'tags') input.tags!.push(...v.split(/[;,|]/).map((x) => x.trim()).filter(Boolean));
     else if (t.startsWith('custom.')) {
       const d = defByKey.get(t.slice(7));

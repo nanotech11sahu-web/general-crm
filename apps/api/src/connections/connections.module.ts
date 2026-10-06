@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Inject, Injectable, Logger, Module, Param, Post, Put, Query } from '@nestjs/common';
 import { IsObject, IsOptional, IsString, MinLength } from 'class-validator';
-import { defaultRegistry, type ConnectorRegistry } from '@leaddesk/connectors-core';
+import type { ConnectorRegistry, FetchLike } from '@leaddesk/connectors-core';
+import { createRegistry } from '@leaddesk/connectors';
 import type { KeyService } from '@leaddesk/crypto';
 import { ConnectionService, InboxService } from '@leaddesk/domain';
 import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
@@ -10,6 +11,8 @@ import { CurrentUser, RequirePermission } from '../common/guards';
 import type { AuthUser } from '../common/auth.types';
 
 export const REGISTRY = Symbol('REGISTRY');
+/** Outbound fetch for connectors/OAuth; undefined = real network. Tests inject recorded fixtures. */
+export const HTTP_FETCH = Symbol('HTTP_FETCH');
 
 class CreateConnectionDto {
   @IsString() provider!: string;
@@ -36,7 +39,7 @@ export class ConnectFacade {
     readonly audit: AuditService,
   ) {
     this.conns = new ConnectionService(db, keys, registry);
-    this.inbox = new InboxService(db, registry);
+    this.inbox = new InboxService(db, registry, 8, keys);
   }
   /** Replay runs in-process like imports; the worker runs the same InboxService from the queue. */
   replayAsync(tenantId: string, userId: string, inboxId: string) {
@@ -114,7 +117,11 @@ export class ConnectController {
 
 @Module({
   controllers: [ConnectController],
-  providers: [ConnectFacade, { provide: REGISTRY, useFactory: defaultRegistry }],
-  exports: [ConnectFacade],
+  providers: [
+    ConnectFacade,
+    { provide: HTTP_FETCH, useValue: undefined },
+    { provide: REGISTRY, inject: [HTTP_FETCH], useFactory: (f: FetchLike | undefined) => createRegistry(process.env, f) },
+  ],
+  exports: [ConnectFacade, REGISTRY, HTTP_FETCH],
 })
 export class ConnectionsModule {}

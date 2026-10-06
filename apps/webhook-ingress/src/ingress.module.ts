@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
-import { defaultRegistry } from '@leaddesk/connectors-core';
+import { createRegistry } from '@leaddesk/connectors';
 import { DbModule } from '@leaddesk/platform';
-import { HooksController, REGISTRY } from './hooks.controller';
+import { HooksController, MetaHooksController, REGISTRY } from './hooks.controller';
 import { createInboxQueue, INBOX_QUEUE } from './inbox-queue';
 
 @Module({
   imports: [DbModule],
-  controllers: [HooksController],
+  controllers: [MetaHooksController, HooksController],
   providers: [
-    { provide: REGISTRY, useFactory: defaultRegistry },
+    { provide: REGISTRY, useFactory: () => createRegistry(process.env) },
     { provide: INBOX_QUEUE, useFactory: () => createInboxQueue() },
   ],
 })

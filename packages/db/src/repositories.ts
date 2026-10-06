@@ -54,6 +54,7 @@ export function createRepositories(m: Models) {
     integrationLogs: new TenantScopedRepository(m.IntegrationLog),
     healthChecks: new TenantScopedRepository(m.ConnectionHealthCheck),
     notifications: new TenantScopedRepository(m.Notification),
+    oauthStates: new TenantScopedRepository(m.OAuthState),
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
     counters: new TenantScopedRepository(m.Counter),
@@ -82,6 +83,10 @@ export function createSystemOps(m: Models) {
     /** webhook-ingress: opaque public id -> tenant + connection. */
     resolveConnection: (publicId: string) =>
       runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.findOne({ publicId }).lean().exec()),
+
+    /** App-level webhooks (Meta) arrive per page, not per connection: find every live connection that owns the page. */
+    resolveConnectionsByPage: (provider: string, pageId: string) =>
+      runAsSystem('webhook.resolveConnection', () => m.IntegrationConnection.find({ provider, 'config.pageIds': pageId, status: { $ne: 'revoked' } }).lean().exec()),
 
     findUserByEmail: (email: string) =>
       runAsSystem('auth.findUserByEmail', () => m.User.findOne({ email: email.toLowerCase() }).exec()),

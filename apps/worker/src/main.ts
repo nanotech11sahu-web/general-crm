@@ -3,7 +3,7 @@ import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
-import { defaultRegistry } from '@leaddesk/connectors-core';
+import { createRegistry } from '@leaddesk/connectors';
 import { DbModule, SYSTEM_OPS, TENANT_DB } from '@leaddesk/platform';
 import { InboxProcessor } from './inbox.processor';
 import { ImportProcessor } from './import.processor';
@@ -22,7 +22,8 @@ async function bootstrap() {
   const db = app.get(TENANT_DB);
   const sys = app.get(SYSTEM_OPS);
 
-  const inbox = new InboxProcessor(db, defaultRegistry());
+  const registry = createRegistry(process.env);
+  const inbox = new InboxProcessor(db, registry, app.get(KEY_SERVICE));
   const inboxWorker = new Worker('inbox', (job) => inbox.process(job as any), { connection, concurrency: 10 });
   inboxWorker.on('failed', (job, err) => console.error('inbox job failed', job?.id, err.message));
 
@@ -31,7 +32,6 @@ async function bootstrap() {
   importWorker.on('failed', (job, err) => console.error('import job failed', job?.id, err.message));
 
   // --- integrity layer: sweeps fan out per-connection jobs; processors run them under tenant context ---
-  const registry = defaultRegistry();
   const integrity = new IntegrityProcessor(db, app.get(KEY_SERVICE), registry);
   const integrityQueue = new Queue('integrity', { connection });
   const integrityWorker = new Worker('integrity', (job) => integrity.process(job as any), { connection, concurrency: 5 });

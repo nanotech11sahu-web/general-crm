@@ -78,3 +78,59 @@ describe('webhook ingress', () => {
     expect(Date.now() - t).toBeLessThan(500);
   });
 });
+
+describe('meta app-level webhook', () => {
+  const APP_SECRET = 'meta-app-secret';
+  const msign = (b: string) => 'sha256=' + createHmac('sha256', APP_SECRET).update(b).digest('hex');
+  const change = (id: string, page = 'PAGE1') => ({ field: 'leadgen', value: { leadgen_id: id, page_id: page, form_id: 'f', created_time: 1 } });
+  const body = (...ids: string[]) => JSON.stringify({ object: 'page', entry: [{ id: 'PAGE1', time: 1, changes: ids.map((i) => change(i)) }] });
+  let metaTenant: string; let otherTenant: string;
+
+  beforeAll(async () => {
+    process.env.META_APP_SECRET = APP_SECRET; process.env.META_WEBHOOK_VERIFY_TOKEN = 'vt-123';
+    const mkT = async (slug: string) => String(((await runAsSystem('test', () => db.models.Tenant.create({ name: slug, slug }))) as any)._id);
+    metaTenant = await mkT('meta-t'); otherTenant = await mkT('meta-o');
+    for (const [t, name, pages] of [[metaTenant, 'Meta A', ['PAGE1', 'PAGE2']], [otherTenant, 'Other', ['PAGE9']]] as const)
+      await runWithTenant(t, () => db.repos.connections.create({ provider: 'meta-leadads', category: 'lead_source', name, publicId: `m-${name}`, status: 'verified', config: { pageIds: pages } }));
+  });
+  const metaPost = (b: string, headers: Record<string, string> = {}) => request(http).post('/hooks/meta-leadads').set('Content-Type', 'application/json').set(headers).send(b);
+
+  it('needs the Meta app credentials to even exist: provider not registered without them', async () => {
+    // registry in this suite was built before META_* were set, so the connector is absent => 404 (not an open endpoint)
+    await metaPost(body('L1'), { 'x-hub-signature-256': msign(body('L1')) }).expect(404);
+  });
+  it('with the provider registered: handshake, signature, routing by page, idempotency', async () => {
+    const { createRegistry } = await import('@leaddesk/connectors');
+    const { REGISTRY } = await import('../src/hooks.controller');
+    const m2 = await Test.createTestingModule({ imports: [(await import('../src/ingress.module')).IngressModule] })
+      .overrideProvider((await import('../src/inbox-queue')).INBOX_QUEUE).useValue({ enqueue: async (j: any) => { jobs.push(j); } })
+      .overrideProvider(REGISTRY).useValue(createRegistry({ META_APP_ID: 'APP1', META_APP_SECRET: APP_SECRET, META_WEBHOOK_VERIFY_TOKEN: 'vt-123' } as any)).compile();
+    const app2 = m2.createNestApplication({ rawBody: true }); await app2.init();
+    const h2 = app2.getHttpServer();
+    const post = (b: string, headers: Record<string, string> = {}) => request(h2).post('/hooks/meta-leadads').set('Content-Type', 'application/json').set(headers).send(b);
+    try {
+      await request(h2).get('/hooks/meta-leadads').query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'vt-123', 'hub.challenge': '777' }).expect(200).expect('777');
+      await request(h2).get('/hooks/meta-leadads').query({ 'hub.mode': 'subscribe', 'hub.verify_token': 'nope', 'hub.challenge': '777' }).expect(403);
+      await post(body('L1')).expect(401);
+      await post(body('L1'), { 'x-hub-signature-256': msign('different body') }).expect(401);
+      const before = jobs.length;
+      const b = body('L10', 'L11');
+      expect((await post(b, { 'x-hub-signature-256': msign(b) }).expect(200)).body.accepted).toBe(2);
+      for (let i = 0; i < 4; i++) await post(b, { 'x-hub-signature-256': msign(b) }).expect(200); // Meta retries
+      expect(jobs.length - before).toBe(2);
+      expect(await runWithTenant(metaTenant, () => db.repos.inbox.count({ provider: 'meta-leadads' }))).toBe(2);
+      const row: any = await runWithTenant(metaTenant, () => db.repos.inbox.findOne({ externalEventId: 'L10' }));
+      expect(row.rawPayload).toMatchObject({ leadgen_id: 'L10', page_id: 'PAGE1' });
+      // a page nobody connected: still 200 (never let Meta disable the webhook) but nothing stored
+      const unk = JSON.stringify({ object: 'page', entry: [{ id: 'PX', changes: [change('Z1', 'PX')] }] });
+      expect((await post(unk, { 'x-hub-signature-256': msign(unk) }).expect(200)).body.accepted).toBe(0);
+      // another tenant's page never receives this tenant's leads
+      expect(await runWithTenant(otherTenant, () => db.repos.inbox.count())).toBe(0);
+      // non-leadgen change types and other objects are ignored
+      const feed = JSON.stringify({ object: 'page', entry: [{ id: 'PAGE1', changes: [{ field: 'feed', value: {} }] }] });
+      expect((await post(feed, { 'x-hub-signature-256': msign(feed) }).expect(200)).body.accepted).toBe(0);
+      // app-level provider cannot be hit through the per-connection route
+      await request(h2).post('/hooks/meta-leadads/m-Meta%20A').set('Content-Type', 'application/json').send('{}').expect(404);
+    } finally { await app2.close(); }
+  });
+});
