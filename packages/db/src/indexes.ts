@@ -127,6 +127,12 @@ export const INDEXES_V4: Idx[] = [
   { collection: 'notifications', keys: { tenantId: 1, createdAt: 1 }, options: { name: 'v4_notifications_recent' } },
 ];
 
+export const INDEXES_V5: Idx[] = [
+  { collection: 'knowledgeentries', keys: { tenantId: 1, active: 1 }, options: { name: 'v5_knowledge_active' } },
+  { collection: 'aisuggestions', keys: { tenantId: 1, type: 1, createdAt: -1 }, options: { name: 'v5_ai_type_created' } },
+  { collection: 'callsessions', keys: { tenantId: 1, 'analysis.status': 1, startedAt: -1 }, options: { name: 'v5_calls_analysis', partialFilterExpression: { 'analysis.status': { $exists: true } } } },
+];
+
 export const COLLECTIONS = [...new Set(INDEXES.map((i) => i.collection))];
 
 export async function ensureCollections(db: Db) {

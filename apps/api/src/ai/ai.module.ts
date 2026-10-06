@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Inject, Injectable, Module, Param, Post, Put, Query } from '@nestjs/common';
-import { IsBoolean, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { Body, Controller, Delete, Get, Inject, Injectable, Module, Param, Post, Put, Query } from '@nestjs/common';
+import { IsArray, IsBoolean, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import type { ConnectorRegistry } from '@leaddesk/connectors-core';
 import type { KeyService } from '@leaddesk/crypto';
 import { AiService, DomainError, presentLead } from '@leaddesk/domain';
@@ -17,7 +17,11 @@ class AiSettingsDto {
   @IsOptional() @IsBoolean() killSwitch?: boolean;
   @IsOptional() @IsInt() @Min(0) @Max(100_000) dailyCap?: number;
   @IsOptional() @IsObject() features?: Record<string, number>;
+  @IsOptional() @IsString() @MaxLength(600) scoringGuidance?: string;
+  @IsOptional() @IsInt() @Min(7) @Max(90) revivalDays?: number;
 }
+class DraftDto { @IsOptional() @IsString() @MaxLength(300) instruction?: string }
+class KbDto { @IsString() @MaxLength(120) title!: string; @IsString() @MaxLength(2000) text!: string; @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[]; @IsOptional() @IsBoolean() active?: boolean }
 class NoteDto { @IsString() @MinLength(3) @MaxLength(1500) note!: string }
 class SearchDto { @IsString() @MinLength(2) @MaxLength(300) q!: string }
 
@@ -78,6 +82,25 @@ export class AiController {
   async assess(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.assess(id); }
   @Post('leads/:id/next-action') @RequirePermission('leads.write')
   async nextAction(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: NoteDto) { await this.f.visibleLead(u, id); return this.f.svc.nextAction(id, b.note); }
+
+  @Post('leads/:id/reply-draft') @RequirePermission('leads.write')
+  async replyDraft(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: DraftDto) { await this.f.visibleLead(u, id); return this.f.svc.draftReply(id, b); }
+  @Post('leads/:id/inbound') @RequirePermission('leads.write')
+  async inbound(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.inboundIntel(id); }
+  @Post('leads/:id/duplicates') @RequirePermission('leads.write')
+  async duplicates(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.findDuplicates(id); }
+  @Post('leads/:id/revive') @RequirePermission('leads.write')
+  async revive(@CurrentUser() u: AuthUser, @Param('id') id: string) { await this.f.visibleLead(u, id); return this.f.svc.revive(id); }
+
+  // ---- knowledge base: facts the drafter may rely on (admins write, everyone who can reply may read) ----
+  @Get('knowledge') @RequirePermission('leads.read')
+  knowledge() { return this.f.svc.kbList(); }
+  @Post('knowledge') @RequirePermission('rules.manage')
+  async kbCreate(@Body() b: KbDto) { const e: any = await this.f.svc.kbSave(b); await this.f.audit.record({ action: 'ai.knowledge_saved', entity: 'knowledge', entityId: String(e._id) }); return e; }
+  @Put('knowledge/:id') @RequirePermission('rules.manage')
+  async kbUpdate(@Param('id') id: string, @Body() b: KbDto) { const e = await this.f.svc.kbSave({ ...b, id }); await this.f.audit.record({ action: 'ai.knowledge_saved', entity: 'knowledge', entityId: id }); return e; }
+  @Delete('knowledge/:id') @RequirePermission('rules.manage')
+  async kbDelete(@Param('id') id: string) { await this.f.audit.record({ action: 'ai.knowledge_deleted', entity: 'knowledge', entityId: id }); return this.f.svc.kbDelete(id); }
 
   /** The model returns a validated filter; the server builds the query, ANDed with the caller's visibility scope. */
   @Post('search') @RequirePermission('leads.read')

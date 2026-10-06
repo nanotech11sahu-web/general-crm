@@ -5,17 +5,19 @@ import { ApiError, api, refresh } from '../../lib/api';
 
 const FEATURES: [string, string, boolean][] = [
   ['assessment', 'New-lead assessment', true], ['summary', 'Lead summaries', true], ['autofill', 'Auto-fill fields', true], ['scoring', 'Lead scoring', true],
-  ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
+  ['reply_draft', 'Draft replies (you send them)', false], ['duplicate', 'Duplicate detection', false], ['inbound_intel', 'Read every new reply (runs in the background)', true], ['revival', 'Suggest re-engaging quiet leads (runs in the background)', false], ['next_action', 'Outcome + next action from notes', false], ['nl_search', 'Natural-language search', false], ['import_mapping', 'Smart import mapping', false],
 ];
-interface Settings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<string, number> }
+interface Settings { enabled: boolean; killSwitch: boolean; dailyCap: number; features: Record<string, number>; scoringGuidance?: string; revivalDays?: number }
+interface Kb { _id: string; title: string; text: string; active: boolean }
 interface Usage { used: number; cap: number; features: { feature: string; requests: number; failures: number }[] }
 
 /** Admin: switch AI on, per-feature level (off / suggest / auto for low-risk), daily cap, kill switch, today's usage. */
 export default function AiSettings() {
   const router = useRouter();
   const [ready, setReady] = useState(false); const [s, setS] = useState<Settings | null>(null); const [u, setU] = useState<Usage | null>(null); const [msg, setMsg] = useState<string | null>(null); const [forbidden, setForbidden] = useState(false);
+  const [kb, setKb] = useState<Kb[]>([]); const [nk, setNk] = useState({ title: '', text: '' });
   const load = useCallback(async () => {
-    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); }
+    try { setS(await api<Settings>('/v1/ai/settings')); setU(await api<Usage>('/v1/ai/usage').catch(() => null)); setKb(await api<Kb[]>('/v1/ai/knowledge').catch(() => [])); }
     catch (e) { if (e instanceof ApiError && e.status === 401) router.replace('/login'); }
   }, [router]);
   useEffect(() => { (async () => { if (!(await refresh())) { router.replace('/login'); return; } const me = await api<{ role: string }>('/v1/me'); if (!['owner', 'admin'].includes(me.role)) setForbidden(true); setReady(true); await load(); })(); }, [router, load]);
@@ -47,7 +49,19 @@ export default function AiSettings() {
               <option value={0}>Off</option><option value={1}>Suggest (you accept)</option>{canAuto && <option value={2}>Auto-apply (low risk)</option>}
             </select></div>
         ))}
-        <p className="reason">AI never contacts leads, and every automatic change is logged. Features that create work for people always need a tap.</p>
+        <p className="reason">AI never contacts leads, and every automatic change is logged. Features that create work for people always need a tap. Background features start off.</p>
+        <label htmlFor="guide">What makes a good lead for you? (used when scoring)</label>
+        <textarea id="guide" maxLength={600} defaultValue={s.scoringGuidance ?? ''} placeholder="e.g. Budget above 80 lakh is hot. Leads from referrals are warmer than portals." onBlur={(e) => { if (e.target.value !== (s.scoringGuidance ?? '')) void save({ scoringGuidance: e.target.value }); }} />
+        <label htmlFor="rev">Call a lead “quiet” after (days)</label>
+        <input id="rev" type="number" min={7} max={90} defaultValue={s.revivalDays ?? 14} onBlur={(e) => { const n = Number(e.target.value); if (n !== s.revivalDays) void save({ revivalDays: n }); }} />
+      </section>
+      <section className="card" data-testid="knowledge"><h2>Knowledge base</h2>
+        <p className="reason">Facts the reply drafter may use: projects, prices, timings, FAQs. It is told to use nothing else, and figures it invents are flagged before you send.</p>
+        <ul className="list">{kb.map((k) => (<li key={k._id}><span><b>{k.title}</b><br /><span className="reason">{k.text.slice(0, 120)}{k.text.length > 120 ? '…' : ''}</span></span><span><button style={{ minHeight: 32, padding: '0 10px' }} onClick={async () => { await api(`/v1/ai/knowledge/${k._id}`, { method: 'DELETE' }); await load(); }}>Delete</button></span></li>))}</ul>
+        <form onSubmit={async (e) => { e.preventDefault(); try { await api('/v1/ai/knowledge', { method: 'POST', body: nk }); setNk({ title: '', text: '' }); setMsg('Added'); await load(); } catch (er) { setMsg(er instanceof ApiError ? er.message : 'Could not save'); } }}>
+          <label htmlFor="kt">Title</label><input id="kt" required maxLength={120} value={nk.title} onChange={(e) => setNk({ ...nk, title: e.target.value })} />
+          <label htmlFor="kx">What should it know?</label><textarea id="kx" required minLength={5} maxLength={2000} value={nk.text} onChange={(e) => setNk({ ...nk, text: e.target.value })} />
+          <div className="row" style={{ marginTop: 8 }}><button className="primary">Add entry</button></div></form>
       </section>
     </main>
   );

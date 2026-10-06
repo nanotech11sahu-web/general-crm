@@ -8,10 +8,10 @@ interface Channels { whatsapp: { connected: boolean }; sms: { connected: boolean
 interface Conversation { _id: string; channel: Channel; windowExpiresAt?: string; unreadCount: number }
 interface Message { _id: string; direction: 'in' | 'out'; body: string; status: string; source?: string; createdAt: string; error?: string }
 interface Template { _id: string; name: string; channel: Channel; body: string }
-interface LeadView { displayName: string; city?: string; ai?: { summary?: string; temperature?: string; reasons?: string[]; score?: number; nextBestAction?: { channel: string; note: string } } }
+interface LeadView { displayName: string; city?: string; ai?: { possibleDuplicates?: { leadId: string; name: string; same: string }[]; inbound?: { intent: string; summary: string; urgency: string }; summary?: string; temperature?: string; reasons?: string[]; score?: number; nextBestAction?: { channel: string; note: string } } }
 interface Suggestion { _id: string; type: string; payload: any; confidence?: number; status: string }
-const AI_ACTIONS: [string, string][] = [['summary', 'Summarise'], ['score', 'Score'], ['autofill', 'Fill fields'], ['assess', 'Full assessment']];
-const describe = (s: Suggestion) => s.type === 'summary' ? s.payload.summary : s.type === 'scoring' ? `Score ${s.payload.score} (${s.payload.temperature}): ${(s.payload.reasons ?? []).join('; ')}` : s.type === 'autofill' ? `Fill: ${Object.entries(s.payload.fields ?? {}).map(([k, v]) => `${k} = ${v}`).join(', ')}` : s.type === 'assessment' ? `${s.payload.summary} · score ${s.payload.score} (${s.payload.temperature}) · ${s.payload.validity}${s.payload.nextBestAction ? ` · first action: ${s.payload.nextBestAction.channel} ${s.payload.nextBestAction.timing}` : ''}` : s.type === 'next_action' ? `Next: ${s.payload.nextAction?.contextNote ?? ''}${s.payload.outcomeLabel ? ` (outcome: ${s.payload.outcomeLabel})` : ''}` : s.type;
+const AI_ACTIONS: [string, string][] = [['summary', 'Summarise'], ['score', 'Score'], ['autofill', 'Fill fields'], ['assess', 'Full assessment'], ['reply-draft', 'Draft a reply'], ['inbound', 'Read last reply'], ['duplicates', 'Find duplicates'], ['revive', 'Re-engage idea']];
+const describe = (s: Suggestion) => s.type === 'summary' ? s.payload.summary : s.type === 'scoring' ? `Score ${s.payload.score} (${s.payload.temperature}): ${(s.payload.reasons ?? []).join('; ')}` : s.type === 'autofill' ? `Fill: ${Object.entries(s.payload.fields ?? {}).map(([k, v]) => `${k} = ${v}`).join(', ')}` : s.type === 'assessment' ? `${s.payload.summary} · score ${s.payload.score} (${s.payload.temperature}) · ${s.payload.validity}${s.payload.nextBestAction ? ` · first action: ${s.payload.nextBestAction.channel} ${s.payload.nextBestAction.timing}` : ''}` : s.type === 'reply_draft' ? `“${s.payload.text}”${s.payload.reason ? ` — ${s.payload.reason}` : ''}` : s.type === 'inbound_intel' ? `Last reply: ${s.payload.summary} (${s.payload.intent}, ${s.payload.sentiment}${s.payload.urgency === 'high' ? ', urgent' : ''}). Try: ${s.payload.suggestedAction}` : s.type === 'duplicate' ? `Possibly the same person as ${(s.payload.candidates ?? []).map((c: any) => `${c.name} (${c.same}: ${c.reason})`).join('; ')}` : s.type === 'revival' ? `Re-engage via ${s.payload.channel}: ${s.payload.reason} Draft: “${s.payload.message}”` : s.type === 'next_action' ? `Next: ${s.payload.nextAction?.contextNote ?? ''}${s.payload.outcomeLabel ? ` (outcome: ${s.payload.outcomeLabel})` : ''}` : s.type;
 
 const STATUS_TEXT: Record<string, string> = { queued: 'sending…', sent: 'sent', delivered: 'delivered', read: 'read', failed: 'failed', received: '' };
 const ERRORS: Record<string, string> = {
@@ -74,6 +74,7 @@ export default function LeadThread() {
     finally { setAiBusy(false); }
   }
   async function decide(sid: string, accept: boolean) {
+    const sg = sugg.find((x) => x._id === sid); if (accept && sg?.type === 'reply_draft') { setText(sg.payload.text); if (sg.payload.needsHuman) setError('Check this draft before sending: ' + (sg.payload.reason ?? 'it may need your input')); }
     try { await api(`/v1/ai/suggestions/${sid}/${accept ? 'accept' : 'reject'}`, { method: 'POST' }); await loadAi(); if (accept) setLead(await api<LeadView>(`/v1/leads/${id}`)); }
     catch (e) { setError(e instanceof ApiError ? e.message : 'Could not apply that suggestion'); await loadAi(); }
   }
@@ -113,6 +114,8 @@ export default function LeadThread() {
         <button onClick={() => router.push('/today')} style={{ minHeight: 36, padding: '0 12px' }}>Back</button>
       </div>
       {lead?.city && <p className="reason">{lead.city}</p>}
+      {(lead?.ai?.possibleDuplicates ?? []).length > 0 && <p className="reason" data-testid="dup-note">Possible duplicate: {lead!.ai!.possibleDuplicates!.map((d) => <a key={d.leadId} href={`/lead/${d.leadId}`}>{d.name} ({d.same})</a>)}. Merging stays a manager action.</p>}
+      {lead?.ai?.inbound?.urgency === 'high' && <p className="err" role="status">Urgent reply: {lead.ai.inbound.summary}</p>}
       {lead?.ai?.summary && <p className="reason" data-testid="ai-summary">{lead.ai.summary}{lead.ai.temperature ? ` (${lead.ai.temperature})` : ''}</p>}
       {aiOn && (
         <section className="card" aria-label="AI assistant"><h2>AI assistant</h2>
@@ -121,7 +124,7 @@ export default function LeadThread() {
           {sugg.map((x) => (
             <div key={x._id} data-testid="suggestion" style={{ marginTop: 10 }}>
               <p className="reason">{describe(x)}{x.confidence !== undefined ? ` · ${Math.round(x.confidence * 100)}% sure` : ''}</p>
-              <div className="row"><button className="primary" onClick={() => decide(x._id, true)}>Accept</button><button onClick={() => decide(x._id, false)}>Dismiss</button></div>
+              <div className="row"><button className="primary" onClick={() => decide(x._id, true)}>{x.type === 'reply_draft' ? 'Use this draft' : x.type === 'duplicate' ? 'Note it' : 'Accept'}</button><button onClick={() => decide(x._id, false)}>Dismiss</button></div>
             </div>
           ))}
         </section>

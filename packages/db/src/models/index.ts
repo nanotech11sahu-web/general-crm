@@ -339,6 +339,13 @@ export function buildModels(conn: Connection) {
     decidedAt: Date,
     error: String,
   });
+  /** Business facts the reply drafter (and autopilot) may rely on: projects, prices, timings, FAQs. Written by admins, never by AI. */
+  const KnowledgeEntry = make(conn, 'KnowledgeEntry', {
+    title: { type: String, required: true },
+    text: { type: String, required: true },
+    tags: [String],
+    active: { type: Boolean, default: true },
+  });
   /** One document per tenant per local day per feature. */
   const AiUsage = make(conn, 'AiUsage', {
     day: { type: String, required: true },
@@ -509,7 +516,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, PasswordReset, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, PlatformAudit, Suppression, AiSuggestion, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, OAuthState, Conversation, Message, MessageTemplate, Subscription, BillingEvent, PlatformAudit, Suppression, AiSuggestion, KnowledgeEntry, AiUsage, PulseDaily, Cadence, CadenceEnrollment, AssignmentRule, RoutingDecision, SlaPolicy, Presence, Outcome, Task, CallSession, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

@@ -1613,3 +1613,41 @@ describe('email: password reset, invitations, notices (phase 9)', () => {
     expect(memMailer.last().text).toContain('https://app.example.test/');
   });
 });
+
+describe('AI assistants API (phase 9: knowledge base, drafting, duplicates)', () => {
+  const ai = { replies: [] as string[], bodies: [] as any[] };
+  const resp = (status: number, b: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(b) });
+  const fx = async (url: string, init?: any) => {
+    const u = new URL(url);
+    if (u.hostname !== 'api.groq.com') return resp(404, {});
+    if (u.pathname.endsWith('/models')) return resp(200, { data: [{ id: 'openai/gpt-oss-20b' }, { id: 'openai/gpt-oss-120b' }] });
+    if (u.pathname.endsWith('/chat/completions')) { const b = JSON.parse(init.body); ai.bodies.push(b); const t = ai.replies.shift(); return t === undefined ? resp(500, {}) : resp(200, { model: b.model, choices: [{ message: { content: t } }], usage: { prompt_tokens: 50, completion_tokens: 10 } }); }
+    return resp(404, {});
+  };
+  it('knowledge base is admin-written and agent-readable; drafts use it, respect lead visibility and never send', async () => {
+    providerFetch = fx;
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'ai2-owner@x.io', password: 'correct-horse-9', name: 'Ava', tenantName: 'AI Two', industryPreset: 'real_estate' }).expect(201);
+    const owner = o.body.accessToken;
+    const mk = async (email: string) => { const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201); const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email.split('@')[0], password: 'agent-pass-123' }).expect(201); return r.body.accessToken as string; };
+    const a1 = await mk('ai2-a1@x.io'), a2 = await mk('ai2-a2@x.io');
+    await request(http).post('/v1/connections').set(auth(owner)).send({ provider: 'ai-groq', name: 'Groq', credentials: { apiKey: 'gsk_' + 'x'.repeat(30) } }).expect(201);
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ enabled: true, scoringGuidance: 'Budget above 80 lakh is hot.', revivalDays: 21 }).expect(200).expect((r) => expect(r.body).toMatchObject({ scoringGuidance: 'Budget above 80 lakh is hot.', revivalDays: 21 }));
+    await request(http).put('/v1/ai/settings').set(auth(owner)).send({ revivalDays: 3 }).expect(400);
+    const kb = (await request(http).post('/v1/ai/knowledge').set(auth(owner)).send({ title: 'Sunrise pricing', text: '3 BHK at 84 lakh.' }).expect(201)).body;
+    await request(http).post('/v1/ai/knowledge').set(auth(a1)).send({ title: 'x', text: 'hacked entry text' }).expect(403);
+    await request(http).post('/v1/ai/knowledge').set(auth(owner)).send({ title: '', text: 'abc' }).expect(422);
+    expect((await request(http).get('/v1/ai/knowledge').set(auth(a1)).expect(200)).body).toHaveLength(1);
+    await request(http).put(`/v1/ai/knowledge/${kb._id}`).set(auth(owner)).send({ title: 'Sunrise pricing', text: '3 BHK at 84 lakh, 2 BHK at 62 lakh.' }).expect(200);
+    const lead = (await request(http).post('/v1/leads').set(auth(a1)).send({ name: 'Draft Dev', city: 'Pune', contacts: [{ value: '9812377701' }] }).expect(201)).body.leadId;
+    ai.replies.push(JSON.stringify({ text: 'Hi Dev, 3 BHK is 84 lakh. Shall I call you?', usedKnowledge: ['Sunrise pricing'], needsHuman: false, confidence: 0.9 }));
+    const d = (await request(http).post(`/v1/ai/leads/${lead}/reply-draft`).set(auth(a1)).send({ instruction: 'ask about 3 bhk pricing' }).expect(201)).body;
+    expect(d).toMatchObject({ type: 'reply_draft', status: 'pending', payload: { usedKnowledge: ['Sunrise pricing'] } });
+    expect(JSON.stringify(ai.bodies[ai.bodies.length - 1])).toContain('84 lakh');
+    await request(http).post(`/v1/ai/leads/${lead}/reply-draft`).set(auth(a2)).send({}).expect(403); // not a2's lead
+    await request(http).post(`/v1/ai/leads/${lead}/inbound`).set(auth(a1)).expect(409); // opt-in feature, still off
+    await request(http).post(`/v1/ai/leads/${lead}/duplicates`).set(auth(a1)).expect(404).expect((r) => expect(r.body.code).toBe('nothing_found'));
+    await request(http).delete(`/v1/ai/knowledge/${kb._id}`).set(auth(a1)).expect(403);
+    await request(http).delete(`/v1/ai/knowledge/${kb._id}`).set(auth(owner)).expect(200);
+    expect((await request(http).get('/v1/ai/knowledge').set(auth(a1)).expect(200)).body).toHaveLength(0);
+  });
+});

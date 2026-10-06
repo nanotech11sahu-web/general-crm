@@ -68,6 +68,7 @@ export function createRepositories(m: Models) {
     suppressions: new TenantScopedRepository(m.Suppression),
     subscriptions: new TenantScopedRepository(m.Subscription),
     aiSuggestions: new TenantScopedRepository(m.AiSuggestion),
+    knowledge: new TenantScopedRepository(m.KnowledgeEntry),
     aiUsage: new TenantScopedRepository(m.AiUsage),
     cadences: new TenantScopedRepository(m.Cadence),
     enrollments: new TenantScopedRepository(m.CadenceEnrollment),

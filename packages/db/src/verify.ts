@@ -1,6 +1,6 @@
 import type { Db } from 'mongodb';
 import { GLOBAL_COLLECTIONS } from './models';
-import { INDEXES, INDEXES_V2, INDEXES_V3, INDEXES_V4 } from './indexes';
+import { INDEXES, INDEXES_V2, INDEXES_V3, INDEXES_V4, INDEXES_V5 } from './indexes';
 import { MIGRATIONS } from './migrations';
 
 export interface VerifyReport { ok: boolean; problems: string[]; counts: Record<string, number>; tenantsWithData: number }
@@ -15,12 +15,12 @@ export async function verifyDatabase(db: Db, o: { expectMinTenants?: number } = 
   const applied = new Set((await db.collection('changelog').find().toArray()).map((d: any) => d.fileName));
   for (const m of MIGRATIONS) if (!applied.has(m.id)) problems.push(`migration not applied: ${m.id}`);
   const have = new Map<string, any[]>();
-  for (const i of [...INDEXES, ...INDEXES_V2, ...INDEXES_V3, ...INDEXES_V4]) {
+  for (const i of [...INDEXES, ...INDEXES_V2, ...INDEXES_V3, ...INDEXES_V4, ...INDEXES_V5]) {
     if (!have.has(i.collection)) have.set(i.collection, await db.collection(i.collection).indexes().catch(() => []));
     if (!have.get(i.collection)!.some((x: any) => sameKeys(x.key, i.keys))) problems.push(`missing index on ${i.collection}: ${JSON.stringify(i.keys)}`);
   }
   const global = new Set<string>(GLOBAL_COLLECTIONS);
-  for (const name of [...new Set([...INDEXES, ...INDEXES_V3, ...INDEXES_V4].map((i) => i.collection))]) {
+  for (const name of [...new Set([...INDEXES, ...INDEXES_V3, ...INDEXES_V4, ...INDEXES_V5].map((i) => i.collection))]) {
     counts[name] = await db.collection(name).estimatedDocumentCount();
     if (!global.has(name)) { const orphan = await db.collection(name).countDocuments({ tenantId: { $exists: false } }); if (orphan) problems.push(`${orphan} document(s) in ${name} have no tenantId`); }
   }
