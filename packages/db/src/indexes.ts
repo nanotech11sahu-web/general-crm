@@ -20,6 +20,8 @@ export const INDEXES: Idx[] = [
   { collection: 'leads', keys: { tenantId: 1, sourceId: 1, externalRef: 1 }, options: { unique: true, partialFilterExpression: { externalRef: { $type: 'string' } } } },
   { collection: 'leads', keys: { tenantId: 1, phoneNorms: 1 } },
   { collection: 'leads', keys: { tenantId: 1, deletedAt: 1, createdAt: -1 } },
+  { collection: 'leads', keys: { tenantId: 1, nameTokens: 1 } },
+  { collection: 'leads', keys: { tenantId: 1, statusId: 1, _id: -1 } },
   { collection: 'leadstatuses', keys: { tenantId: 1, position: 1 } },
   { collection: 'lostreasons', keys: { tenantId: 1, label: 1 }, options: { unique: true } },
   { collection: 'leadsources', keys: { tenantId: 1, kind: 1, name: 1 }, options: { unique: true } },

@@ -1,9 +1,11 @@
-import { Body, Controller, Delete, Get, Inject, Injectable, Module, Param, Patch, Post, Query } from '@nestjs/common';
-import { IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, MaxLength, MinLength, ValidateNested, ArrayMaxSize } from 'class-validator';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Inject, Injectable, Module, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
+import { IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, MaxLength, MinLength, ValidateNested, ArrayMaxSize, ArrayMinSize } from 'class-validator';
 import { Type } from 'class-transformer';
-import { LeadService, presentLead } from '@leaddesk/domain';
+import { csvCell, DomainError, LeadSearch, LeadService, presentLead, QUERY_KEYS, type LeadQuery } from '@leaddesk/domain';
 import { TENANT_DB } from '@leaddesk/platform';
-import type { TenantDb } from '@leaddesk/db';
+import { toObjectId, type TenantDb } from '@leaddesk/db';
+import { can } from '@leaddesk/shared';
 import type { AuthUser } from '../common/auth.types';
 import { CurrentUser, RequirePermission } from '../common/guards';
 import { ScopeService } from '../common/scope.service';
@@ -50,12 +52,44 @@ class CustomFieldDto {
   @IsOptional() @IsBoolean() showInList?: boolean;
   @IsOptional() @IsArray() @IsString({ each: true }) requiredInStatusIds?: string[];
 }
+class BulkDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @IsString({ each: true }) ids!: string[];
+  @IsIn(['assign', 'status', 'tag', 'delete']) action!: 'assign' | 'status' | 'tag' | 'delete';
+  @IsOptional() @IsString() ownerId?: string;
+  @IsOptional() @IsString() statusId?: string;
+  @IsOptional() @IsString() lostReasonId?: string;
+  @IsOptional() @IsString() tag?: string;
+}
+class ViewDto {
+  @IsString() @MinLength(1) @MaxLength(80) name!: string;
+  @IsObject() filter!: Record<string, unknown>;
+  @IsOptional() @IsBoolean() shared?: boolean;
+}
+class AssignDto { @IsOptional() @IsString() ownerId?: string | null }
 class LostReasonDto { @IsString() @MinLength(1) label!: string }
 
 @Injectable()
 export class LeadsFacade {
   readonly svc: LeadService;
-  constructor(@Inject(TENANT_DB) readonly db: TenantDb, readonly scope: ScopeService, readonly audit: AuditService) { this.svc = new LeadService(db); }
+  readonly search: LeadSearch;
+  constructor(@Inject(TENANT_DB) readonly db: TenantDb, readonly scope: ScopeService, readonly audit: AuditService) { this.svc = new LeadService(db); this.search = new LeadSearch(db); }
+
+  /** Validates a LeadQuery from untrusted input (query string / saved view) against the whitelist. */
+  parseQuery(raw: Record<string, any>, strict = false): LeadQuery {
+    const q: Record<string, unknown> = {};
+    for (const k of Object.keys(raw)) {
+      if (!QUERY_KEYS.includes(k as any)) {
+        if (strict) throw new DomainError('invalid_query', `Unknown filter: ${k}`);
+        continue; // list endpoint also carries cursor/limit/viewId
+      }
+      let v = raw[k];
+      if (typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') throw new DomainError('invalid_query', `Invalid value for ${k}`);
+      if (k === 'unassigned') v = v === true || v === 'true';
+      if (k === 'untouchedDays') v = Number(v);
+      q[k] = v;
+    }
+    return q as LeadQuery;
+  }
 
   async visible(u: AuthUser, id: string) {
     const lead = await this.svc.get(id);
@@ -67,6 +101,83 @@ export class LeadsFacade {
 @Controller('v1')
 export class LeadsController {
   constructor(private readonly f: LeadsFacade) {}
+
+  @Get('leads') @RequirePermission('leads.read')
+  async list(@CurrentUser() u: AuthUser, @Query() qs: Record<string, any>) {
+    let q = this.f.parseQuery(qs);
+    if (qs.viewId) {
+      const v: any = await this.f.db.repos.views.findOne({ _id: qs.viewId, $or: [{ shared: true }, { ownerId: toObjectId(u.userId) }] });
+      if (!v) throw new DomainError('not_found', 'View not found', undefined, 404);
+      q = { ...this.f.parseQuery(v.filter, true), ...q };
+    }
+    return this.f.search.list(q, { role: u.role, scope: await this.f.scope.leadFilter(u), cursor: qs.cursor, limit: qs.limit ? Number(qs.limit) : undefined });
+  }
+
+  /** Manager/admin only; audited; CSV-injection safe. Agents never get bulk data (custody). */
+  @Get('leads-export') @RequirePermission('leads.export')
+  async export(@CurrentUser() u: AuthUser, @Query() qs: Record<string, any>, @Res() res: Response) {
+    const q = this.f.parseQuery(qs);
+    const rows: any[] = await this.f.search.exportRows(q, { role: u.role, scope: await this.f.scope.leadFilter(u) });
+    await this.f.audit.record({ action: 'leads.exported', entity: 'lead', meta: { count: rows.length, filter: q } });
+    const head = ['id', 'name', 'phones', 'emails', 'city', 'tags', 'createdAt'];
+    const lines = [head.join(',')].concat(rows.map((l) => [
+      l._id, l.displayName,
+      l.contacts.filter((c: any) => c.kind === 'phone').map((c: any) => c.valueNorm).join(' '),
+      l.contacts.filter((c: any) => c.kind === 'email').map((c: any) => c.valueNorm).join(' '),
+      l.city, (l.tags ?? []).join(' '), l.createdAt,
+    ].map(csvCell).join(',')));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="leads.csv"');
+    res.send(lines.join('\n'));
+  }
+
+  @Post('leads/bulk') @RequirePermission('leads.write')
+  async bulk(@CurrentUser() u: AuthUser, @Body() b: BulkDto) {
+    if ((b.action === 'assign' || b.action === 'delete') && !can(u.role, 'leads.reassign')) throw new ForbiddenException(`Missing permission: leads.reassign`);
+    const scope = await this.f.scope.leadFilter(u);
+    const visible: any[] = await this.f.db.repos.leads.find({ $and: [{ _id: { $in: b.ids.map(toObjectId) }, deletedAt: null }, scope] }, { projection: { _id: 1 } });
+    const ok = new Set(visible.map((l) => String(l._id)));
+    const failed: { id: string; reason: string }[] = b.ids.filter((id) => !ok.has(id)).map((id) => ({ id, reason: 'not found or not visible' }));
+    let updated = 0;
+    for (const id of ok) {
+      try {
+        if (b.action === 'assign') await this.f.svc.assign(id, b.ownerId ?? null);
+        else if (b.action === 'status') await this.f.svc.changeStatus(id, b.statusId!, { lostReasonId: b.lostReasonId });
+        else if (b.action === 'tag') { if (!b.tag) throw new BadRequestException('tag required'); await this.f.db.repos.leads.updateOne({ _id: id }, { $addToSet: { tags: b.tag } }); }
+        else await this.f.svc.softDelete(id);
+        updated++;
+      } catch (e: any) { failed.push({ id, reason: e?.message ?? 'failed' }); }
+    }
+    await this.f.audit.record({ action: `leads.bulk_${b.action}`, entity: 'lead', meta: { requested: b.ids.length, updated } });
+    return { updated, failed };
+  }
+
+  @Post('leads/:id/assign') @RequirePermission('leads.reassign')
+  async assign(@Param('id') id: string, @Body() b: AssignDto) {
+    await this.f.svc.assign(id, b.ownerId ?? null);
+    await this.f.audit.record({ action: 'lead.assigned', entity: 'lead', entityId: id, meta: { ownerId: b.ownerId ?? null } });
+    return { ok: true };
+  }
+
+  // ---- saved views ----
+  @Get('views') @RequirePermission('leads.read')
+  views(@CurrentUser() u: AuthUser) { return this.f.db.repos.views.find({ $or: [{ shared: true }, { ownerId: toObjectId(u.userId) }] }); }
+
+  @Post('views') @RequirePermission('leads.read')
+  createView(@CurrentUser() u: AuthUser, @Body() b: ViewDto) {
+    if (b.shared && !can(u.role, 'leads.reassign')) throw new ForbiddenException('Only managers and admins can share views');
+    const filter = this.f.parseQuery(b.filter as any, true); // validated now so stored views are always safe
+    return this.f.db.repos.views.create({ name: b.name, filter, shared: !!b.shared, ownerId: toObjectId(u.userId) });
+  }
+
+  @Delete('views/:id') @RequirePermission('leads.read')
+  async deleteView(@CurrentUser() u: AuthUser, @Param('id') id: string) {
+    const v: any = await this.f.db.repos.views.findById(id);
+    if (!v) throw new DomainError('not_found', 'View not found', undefined, 404);
+    if (String(v.ownerId) !== u.userId && !can(u.role, 'tenant.manage')) throw new ForbiddenException();
+    await this.f.db.repos.views.deleteOne({ _id: id });
+    return { ok: true };
+  }
 
   @Post('leads') @RequirePermission('leads.write')
   create(@CurrentUser() u: AuthUser, @Body() b: CreateLeadDto) {

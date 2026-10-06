@@ -8,7 +8,8 @@ const maskEmail = (e: string) => e.replace(/^(.).*(@.*)$/, '$1•••$2');
  */
 export function presentLead(lead: any, role: Role) {
   const full = role !== 'agent';
-  const { contacts, phoneNorms: _p, ...rest } = lead;
+  const { contacts, ...rest } = lead;
+  delete (rest as any).phoneNorms;
   return {
     ...rest,
     contacts: (contacts ?? []).map((c: any) => full

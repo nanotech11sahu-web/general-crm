@@ -1,6 +1,6 @@
 import { getContext, newObjectId, requireTenantId, toObjectId, withTransaction, type TenantDb } from '@leaddesk/db';
 import { DomainError, notFound } from './errors';
-import { cleanName, normalizeContacts, phoneSearchKeys, type NormContact, type RawContact } from './normalize';
+import { cleanName, nameTokens, normalizeContacts, phoneSearchKeys, type NormContact, type RawContact } from './normalize';
 
 export interface IntakeInput {
   name?: string;
@@ -65,8 +65,10 @@ export class LeadService {
     if (hits.length) return this.attachToExisting(String(hits[0].leadId), hits, contacts, input, sourceId, policy);
 
     const firstStatus: any = (await this.r.statuses.find({ kind: 'open' }, { sort: { position: 1 }, limit: 1 }))[0];
+    const displayName = cleanName(input.name) || contacts.find((c) => c.kind === 'email')?.valueNorm || 'Unknown';
     const lead: any = await this.r.leads.create({
-      displayName: cleanName(input.name) || contacts.find((c) => c.kind === 'email')?.valueNorm || 'Unknown',
+      displayName,
+      nameTokens: nameTokens(displayName),
       statusId: firstStatus?._id, sourceId, externalRef: input.externalRef,
       campaign: input.campaign, adSet: input.adSet, ad: input.ad, formName: input.formName,
       ownerId: input.ownerId ? toObjectId(input.ownerId) : undefined, assignedAt: input.ownerId ? new Date() : undefined,
@@ -87,7 +89,7 @@ export class LeadService {
     const set: Record<string, unknown> = { lastEnquiryAt: new Date() };
     if (policy === 'overwrite') {
       for (const k of ['city', 'language', 'budgetText', 'campaign', 'adSet', 'ad', 'formName'] as const) if ((input as any)[k]) set[k] = (input as any)[k];
-      if (cleanName(input.name)) set.displayName = cleanName(input.name);
+      if (cleanName(input.name)) { set.displayName = cleanName(input.name); set.nameTokens = nameTokens(cleanName(input.name)); }
     }
     const update: Record<string, unknown> = { $set: set };
     if (fresh.length) {
@@ -136,6 +138,7 @@ export class LeadService {
     for (const k of ['displayName', 'city', 'language', 'budgetText', 'tags', 'nextActionAt'] as const) {
       if ((patch as any)[k] !== undefined && JSON.stringify((patch as any)[k]) !== JSON.stringify(lead[k])) {
         set[k] = k === 'displayName' ? cleanName(patch.displayName) : (patch as any)[k];
+        if (k === 'displayName') set.nameTokens = nameTokens(String(set[k]));
         changes[k] = { from: lead[k], to: set[k] };
       }
     }
@@ -237,6 +240,19 @@ export class LeadService {
       await this.activity(m.winnerId, 'field_changed', { changes: { merge: { from: 'merged', to: 'undone' } }, mergeId });
       return { winnerId: String(m.winnerId), loserId: String(m.loserId) };
     });
+  }
+
+  /** (Re)assign a lead. `ownerId: null` sends it back to the unassigned/manager pool. */
+  async assign(id: string, ownerId: string | null, teamId?: string | null) {
+    const lead: any = await this.get(id);
+    if (ownerId) {
+      const m: any = await this.r.memberships.findOne({ userId: ownerId, status: 'active' });
+      if (!m) throw new DomainError('invalid_owner', 'Owner is not an active member of this workspace');
+      if (teamId === undefined) teamId = m.teamId ? String(m.teamId) : null;
+    }
+    await this.r.leads.updateOne({ _id: lead._id }, { $set: { ownerId: ownerId ? toObjectId(ownerId) : null, teamId: teamId ? toObjectId(teamId) : null, assignedAt: new Date(), claimedAt: null } });
+    await this.activity(lead._id, lead.ownerId ? 'reassigned' : 'assigned', { from: lead.ownerId ?? null, to: ownerId });
+    await this.r.outbox.add('lead.assigned', id, { ownerId });
   }
 
   // helpers for tests / callers

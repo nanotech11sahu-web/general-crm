@@ -159,3 +159,106 @@ describe('leads API (phase 1a)', () => {
     await request(http).get(`/v1/leads/${y}`).set(auth(o.token)).expect(200);
   });
 });
+
+describe('search, views, bulk, export, offboarding (phase 1b)', () => {
+  let owner: string; let agentTok: string; let agentId: string; let agent2Tok: string; let agent2Id: string;
+  const mkAgent = async (email: string) => {
+    const inv = await request(http).post('/v1/invitations').set(auth(owner)).send({ email, role: 'agent' }).expect(201);
+    const r = await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: email, password: 'agent-pass-123' }).expect(201);
+    const me = await request(http).get('/v1/me').set(auth(r.body.accessToken)).expect(200);
+    return { tok: r.body.accessToken as string, id: me.body.userId as string };
+  };
+  beforeAll(async () => {
+    const o = await request(http).post('/v1/auth/signup').send({ email: 'p1b@x.io', password: 'correct-horse-9', name: 'Owner', tenantName: 'P1B Co' }).expect(201);
+    owner = o.body.accessToken;
+    ({ tok: agentTok, id: agentId } = await mkAgent('p1b-a1@x.io'));
+    ({ tok: agent2Tok, id: agent2Id } = await mkAgent('p1b-a2@x.io'));
+    for (const [n, p, city] of [['Priya Sharma', '9810000001', 'Delhi'], ['Rahul Verma', '9810000002', 'Pune'], ['Priyanka Rao', '9810000003', 'Pune']] as const)
+      await request(http).post('/v1/leads').set(auth(owner)).send({ name: n, city, contacts: [{ value: p }] }).expect(201);
+  });
+
+  it('searches by name word prefix and by phone fragments; agents need >= 6 digits', async () => {
+    const byName = (await request(http).get('/v1/leads').query({ q: 'priy' }).set(auth(owner)).expect(200)).body;
+    expect(byName.items.map((l: any) => l.displayName).sort()).toEqual(['Priya Sharma', 'Priyanka Rao']);
+    expect((await request(http).get('/v1/leads').query({ q: 'sharma pri' }).set(auth(owner)).expect(200)).body.items).toHaveLength(1);
+    expect((await request(http).get('/v1/leads').query({ q: '9810000002' }).set(auth(owner)).expect(200)).body.items[0].displayName).toBe('Rahul Verma');
+    expect((await request(http).get('/v1/leads').query({ q: '+91 98100 00003' }).set(auth(owner)).expect(200)).body.items[0].displayName).toBe('Priyanka Rao');
+    expect((await request(http).get('/v1/leads').query({ q: '0000003' }).set(auth(owner)).expect(200)).body.items[0].displayName).toBe('Priyanka Rao'); // suffix
+    expect((await request(http).get('/v1/leads').query({ q: '98100' }).set(auth(owner)).expect(200)).body.items).toHaveLength(3); // prefix
+    await request(http).get('/v1/leads').query({ q: '9810' }).set(auth(agentTok)).expect(422).expect((r) => expect(r.body.code).toBe('search_too_short'));
+  });
+  it('regex metacharacters in search are inert; unknown filters rejected', async () => {
+    await request(http).get('/v1/leads').query({ q: '.*' }).set(auth(owner)).expect(422); // punctuation-only is an empty search, never a regex
+    expect((await request(http).get('/v1/leads').query({ q: 'zzz.*' }).set(auth(owner)).expect(200)).body.items).toHaveLength(0);
+    expect((await request(http).get('/v1/leads').query({ city: '.*' }).set(auth(owner)).expect(200)).body.items).toHaveLength(0);
+    await request(http).post('/v1/views').set(auth(owner)).send({ name: 'bad', filter: { $where: '1' } }).expect(422);
+  });
+  it('cursor pagination walks all rows exactly once', async () => {
+    const seen: string[] = []; let cursor: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      const r = (await request(http).get('/v1/leads').query({ limit: 2, ...(cursor ? { cursor } : {}) }).set(auth(owner)).expect(200)).body;
+      seen.push(...r.items.map((l: any) => l._id));
+      if (!r.nextCursor) break; cursor = r.nextCursor;
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen).toHaveLength(3);
+  });
+  it('agents only list their own leads, masked; unassigned leads are invisible to them', async () => {
+    expect((await request(http).get('/v1/leads').set(auth(agentTok)).expect(200)).body.items).toHaveLength(0);
+    const mine = (await request(http).post('/v1/leads').set(auth(agentTok)).send({ name: 'Agent Lead', contacts: [{ value: '9820000001' }] }).expect(201)).body.leadId;
+    const list = (await request(http).get('/v1/leads').set(auth(agentTok)).expect(200)).body;
+    expect(list.items.map((l: any) => l._id)).toEqual([mine]);
+    expect(JSON.stringify(list)).not.toMatch(/9820000001|valueNorm|phoneNorms/);
+    expect((await request(http).get('/v1/leads').set(auth(agent2Tok)).expect(200)).body.items).toHaveLength(0);
+    // an agent searching for a number that belongs to someone else's lead finds nothing
+    expect((await request(http).get('/v1/leads').query({ q: '9810000001' }).set(auth(agentTok)).expect(200)).body.items).toHaveLength(0);
+  });
+  it('saved views: validated, private/shared rules', async () => {
+    const v = (await request(http).post('/v1/views').set(auth(owner)).send({ name: 'Pune', filter: { city: 'Pune' }, shared: true }).expect(201)).body;
+    expect((await request(http).get('/v1/leads').query({ viewId: v._id }).set(auth(owner)).expect(200)).body.items).toHaveLength(2);
+    await request(http).post('/v1/views').set(auth(agentTok)).send({ name: 'x', filter: {}, shared: true }).expect(403);
+    expect((await request(http).get('/v1/views').set(auth(agentTok)).expect(200)).body.map((x: any) => x.name)).toContain('Pune');
+    await request(http).delete(`/v1/views/${v._id}`).set(auth(agentTok)).expect(403);
+  });
+  it('assign + bulk: agents cannot reassign; bulk respects visibility', async () => {
+    const all = (await request(http).get('/v1/leads').set(auth(owner)).expect(200)).body.items;
+    const target = all.find((l: any) => l.displayName === 'Rahul Verma')._id;
+    await request(http).post(`/v1/leads/${target}/assign`).set(auth(agentTok)).send({ ownerId: agentId }).expect(403);
+    await request(http).post(`/v1/leads/${target}/assign`).set(auth(owner)).send({ ownerId: agent2Id }).expect(201);
+    expect((await request(http).get('/v1/leads').set(auth(agent2Tok)).expect(200)).body.items.map((l: any) => l._id)).toContain(target);
+    const b = (await request(http).post('/v1/leads/bulk').set(auth(agentTok)).send({ ids: [target], action: 'tag', tag: 'hot' }).expect(201)).body;
+    expect(b.updated).toBe(0); expect(b.failed[0].reason).toMatch(/not visible/);
+    const b2 = (await request(http).post('/v1/leads/bulk').set(auth(owner)).send({ ids: [target], action: 'tag', tag: 'hot' }).expect(201)).body;
+    expect(b2.updated).toBe(1);
+    await request(http).post('/v1/leads/bulk').set(auth(agentTok)).send({ ids: [target], action: 'delete' }).expect(403);
+    await request(http).post('/v1/leads/assign-nope').set(auth(owner)).expect(404);
+  });
+  it('export: managers/admins only, audited, formula-injection safe', async () => {
+    await request(http).post('/v1/leads').set(auth(owner)).send({ name: '=HYPERLINK("http://evil")', contacts: [{ value: '9830000001' }] }).expect(201);
+    await request(http).get('/v1/leads-export').set(auth(agentTok)).expect(403);
+    const csv = (await request(http).get('/v1/leads-export').set(auth(owner)).expect(200)).text;
+    expect(csv.split('\n')[0]).toBe('id,name,phones,emails,city,tags,createdAt');
+    expect(csv).toContain('+919830000001');
+    expect(csv).toContain(`"'=HYPERLINK(""http://evil"")"`);
+  });
+  it('offboarding: deactivates, kills the live token immediately, reassigns open leads round-robin', async () => {
+    const x = await mkAgent('p1b-off@x.io'); const y = await mkAgent('p1b-y@x.io');
+    for (let i = 0; i < 4; i++) await request(http).post('/v1/leads').set(auth(x.tok)).send({ name: `Off ${i}`, contacts: [{ value: `98400000${i}0` }] }).expect(201);
+    expect((await request(http).get('/v1/leads').set(auth(x.tok)).expect(200)).body.items).toHaveLength(4);
+    await request(http).post(`/v1/users/${x.id}/offboard`).set(auth(agentTok)).send({}).expect(403);
+    await request(http).post(`/v1/users/${x.id}/offboard`).set(auth(owner)).send({ poolUserIds: [x.id] }).expect(422);
+    const r = await request(http).post(`/v1/users/${x.id}/offboard`).set(auth(owner)).send({ poolUserIds: [y.id, agent2Id] }).expect(201);
+    expect(r.body).toEqual({ reassigned: 4, unassigned: 0 });
+    await request(http).get('/v1/me').set(auth(x.tok)).expect(401); // token dead right away
+    expect((await request(http).get('/v1/leads').query({ ownerId: y.id }).set(auth(owner)).expect(200)).body.items.filter((l: any) => l.displayName.startsWith('Off'))).toHaveLength(2);
+    const users = (await request(http).get('/v1/users').set(auth(owner)).expect(200)).body;
+    expect(users.find((u: any) => u.userId === x.id).status).toBe('inactive');
+    await request(http).post('/v1/auth/login').send({ email: 'p1b-off@x.io', password: 'agent-pass-123' }).expect(401); // no active membership
+    // history preserved: reassignment is on each lead's timeline
+    const any = (await request(http).get('/v1/leads').query({ q: 'Off 0' }).set(auth(owner)).expect(200)).body.items[0];
+    expect((await request(http).get(`/v1/leads/${any._id}/timeline`).set(auth(owner)).expect(200)).body.items.map((a: any) => a.type)).toContain('reassigned');
+    // owner cannot be offboarded
+    const me = (await request(http).get('/v1/me').set(auth(owner)).expect(200)).body.userId;
+    await request(http).post(`/v1/users/${me}/offboard`).set(auth(owner)).send({}).expect(422);
+  });
+});

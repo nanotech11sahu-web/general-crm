@@ -95,6 +95,7 @@ export function buildModels(conn: Connection) {
       verified: Boolean,
       optedOutChannels: [String],
     }],
+    nameTokens: [String], // lowercased word starts for anchored prefix search
     phoneNorms: [String], // denormalised for search: full E.164, last-10 digits and prefixes
     tags: [String],
     custom: { type: Schema.Types.Mixed, default: {} },

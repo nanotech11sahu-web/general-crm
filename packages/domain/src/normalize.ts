@@ -40,3 +40,9 @@ export function phoneSearchKeys(e164: string): string[] {
 export function cleanName(s: unknown): string {
   return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
+
+/** Lowercased words (and the full name) used for anchored prefix search on an indexed array. */
+export function nameTokens(name: string): string[] {
+  const n = name.toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return [...new Set(n.split(' ').filter(Boolean))].slice(0, 12);
+}

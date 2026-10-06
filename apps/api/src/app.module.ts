@@ -2,14 +2,15 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
-import { JwtAuthGuard, PermissionGuard } from './common/guards';
+import { CommonModule, JwtAuthGuard, PermissionGuard } from './common/guards';
+import { UsersModule } from './users/users.module';
 import { TenantContextInterceptor } from './common/tenant-context.interceptor';
 import { ConnectionsModule } from './connections/connections.module';
 import { DbModule } from '@leaddesk/platform';
 import { LeadsModule } from './leads/leads.module';
 
 @Module({
-  imports: [DbModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule],
+  imports: [DbModule, CommonModule, AuditModule, AuthModule, ConnectionsModule, LeadsModule, UsersModule],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },

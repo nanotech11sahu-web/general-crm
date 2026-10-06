@@ -46,7 +46,7 @@ describe('intake pipeline', () => {
     const types = (await as(A, () => svc.timeline(first.leadId))).items.map((a: any) => a.type);
     expect(types).toContain('re_enquired');
     // new email now resolves to the same lead
-    expect((await as(A, () => svc.intake({ contacts: [{ value: 'DUP@x.io' }] }))).leadId).toBe(first.leadId);
+    expect(((await as(A, () => svc.intake({ contacts: [{ value: 'DUP@x.io' }] }))) as any).leadId).toBe(first.leadId);
   });
 
   it('skip and overwrite policies', async () => {
@@ -136,7 +136,7 @@ describe('merge', () => {
     await expect(as(A, () => svc.get(l.leadId))).rejects.toThrow('Lead not found');
     expect((await as(A, () => svc.timeline(w.leadId))).items.some((a: any) => a.payload?.text === 'loser note')).toBe(true);
     // contact now resolves to winner
-    expect((await as(A, () => svc.intake({ contacts: [{ value: '9555555552' }] }))).leadId).toBe(w.leadId);
+    expect(((await as(A, () => svc.intake({ contacts: [{ value: '9555555552' }] }))) as any).leadId).toBe(w.leadId);
 
     await as(A, () => svc.undoMerge(mergeId));
     const w2: any = await as(A, () => svc.get(w.leadId)); const l2: any = await as(A, () => svc.get(l.leadId));
