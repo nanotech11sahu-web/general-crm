@@ -12,7 +12,7 @@ describe('every registered connector passes the shared conformance suite', () =>
       expect(m.capabilities.length).toBeGreaterThan(0);
     });
     it(`${m.id}: verify/health resolve`, async () => {
-      const ctx = { tenantId: 't', connectionId: 'c', config: {}, secret: async () => 's' };
+      const ctx = { tenantId: 't', connectionId: 'c', config: {}, credentials: async () => ({ signingSecret: 's' }) };
       expect((await c.verify(ctx)).ok).toBe(true);
       expect((await c.health(ctx)).ok).toBe(true);
     });

@@ -18,39 +18,60 @@ beforeAll(async () => {
 afterAll(async () => { await router.close(); await rs.stop(); });
 
 describe('InboxProcessor', () => {
+  let connId: any;
+  beforeAll(async () => {
+    const { seedPreset } = await import('@leaddesk/domain');
+    await runWithTenant(A, () => seedPreset(db.repos, 'generic'));
+    connId = (await runWithTenant(A, () => db.repos.connections.create({ provider: 'website-webhook', category: 'lead_source', name: 'Site', publicId: 'wk-pub', status: 'verified' }))) ._id;
+  });
   const mkRow = (t: string, extra: any = {}) => runWithTenant(t, () => db.repos.inbox.create({
-    connectionId: db.models.IntegrationInbox.base.Types.ObjectId.createFromTime(1), provider: 'website-webhook',
-    externalEventId: 'e' + Math.random(), rawPayload: { id: 'L1' }, signatureValid: true, ...extra }));
+    connectionId: connId, provider: 'website-webhook', externalEventId: 'e' + Math.random(), rawPayload: { id: 'L1', name: 'Wk', phone: '9876500001' }, signatureValid: true, ...extra }));
+  const job = (t: string, row: any) => ({ name: 'inbox.process', data: { tenantId: t, inboxId: String(row._id) }, attemptsMade: 0 });
+  const status = async (t: string, row: any) => ((await runWithTenant(t, () => db.repos.inbox.findById(row._id))) as any).status;
 
-  it('parses, marks done, is idempotent', async () => {
+  it('turns a webhook into a lead via the intake pipeline; redelivery is idempotent', async () => {
     const p = new InboxProcessor(db, defaultRegistry());
     const row: any = await mkRow(A);
-    const job = { name: 'inbox.process', data: { tenantId: A, inboxId: String(row._id) }, attemptsMade: 0 };
-    expect(await p.process(job)).toEqual({ events: 1 });
-    expect(((await runWithTenant(A, () => db.repos.inbox.findById(row._id))) as any).status).toBe('done');
-    expect(await p.process(job)).toEqual({ events: 0 });
+    expect(await p.process(job(A, row))).toEqual({ events: 1 });
+    expect(await status(A, row)).toBe('done');
+    expect(await runWithTenant(A, () => db.repos.leads.count({ displayName: 'Wk' }))).toBe(1);
+    expect(await p.process(job(A, row))).toEqual({ events: 0 });
+    expect(await runWithTenant(A, () => db.repos.leads.count({ displayName: 'Wk' }))).toBe(1);
+    expect(((await runWithTenant(A, () => db.repos.connections.findById(connId))) as any).lastEventAt).toBeTruthy();
   });
   it("tenant B's job cannot process tenant A's row", async () => {
-    const p = new InboxProcessor(db, defaultRegistry());
     const row: any = await mkRow(A);
-    await expect(p.process({ name: 'x', data: { tenantId: B, inboxId: String(row._id) }, attemptsMade: 0 })).rejects.toThrow('inbox row not found');
+    await expect(new InboxProcessor(db, defaultRegistry()).process(job(B, row))).rejects.toThrow('Inbox event not found');
+    expect(await status(A, row)).toBe('received');
   });
   it('rejects jobs with no tenantId', async () => {
     await expect(new InboxProcessor(db, defaultRegistry()).process({ name: 'x', data: { inboxId: 'x' } as any, attemptsMade: 0 })).rejects.toThrow(/missing tenantId/);
   });
-  it('failed parse retries then goes dead', async () => {
-    const p = new InboxProcessor(db, defaultRegistry(), 2);
-    const row: any = await mkRow(A, { provider: 'unknown-provider' });
-    const job = { name: 'x', data: { tenantId: A, inboxId: String(row._id) }, attemptsMade: 0 };
-    await expect(p.process(job)).rejects.toThrow();
-    expect(((await runWithTenant(A, () => db.repos.inbox.findById(row._id))) as any).status).toBe('failed');
-    await expect(p.process(job)).rejects.toThrow();
-    expect(((await runWithTenant(A, () => db.repos.inbox.findById(row._id))) as any).status).toBe('dead');
+  it('unmappable payload is a non-retryable "failed" (needs attention), not a queue retry loop', async () => {
+    const row: any = await mkRow(A, { rawPayload: { id: 'L9', nothing: 'useful' } });
+    const out = await new InboxProcessor(db, defaultRegistry()).process(job(A, row)); // does not throw
+    expect(out).toEqual({ events: 0 });
+    expect(await status(A, row)).toBe('failed');
+    expect(((await runWithTenant(A, () => db.repos.inbox.findById(row._id))) as any).error).toMatch(/rejected/i);
+  });
+  it('infrastructure errors throw for retry and end as dead after max attempts', async () => {
+    const reg = defaultRegistry();
+    const wh: any = reg.get('website-webhook'); const orig = wh.parseWebhook;
+    wh.parseWebhook = async () => { throw new Error('provider 503'); };
+    try {
+      const p = new InboxProcessor(db, reg, 2);
+      const row: any = await mkRow(A);
+      await expect(p.process(job(A, row))).rejects.toThrow('provider 503');
+      expect(await status(A, row)).toBe('failed');
+      await expect(p.process(job(A, row))).rejects.toThrow('provider 503');
+      expect(await status(A, row)).toBe('dead');
+    } finally { wh.parseWebhook = orig; }
   });
 });
 
 describe('OutboxDispatcher', () => {
   it('publishes each committed event once with its tenantId; rolled-back events never appear; failed publish is retried after lease', async () => {
+    for (const e of await sys.claimEvents(1000)) await sys.markDispatched(e._id); // drain events from earlier suites
     await runWithTenant(A, () => withTransaction(db.conn, () => db.repos.outbox.add('lead.created', '1')));
     await runWithTenant(B, () => withTransaction(db.conn, () => db.repos.outbox.add('lead.created', '2')));
     await expect(runWithTenant(A, () => withTransaction(db.conn, async () => { await db.repos.outbox.add('lead.created', 'ghost'); throw new Error('x'); }))).rejects.toThrow();
@@ -73,7 +94,7 @@ describe('ImportProcessor', () => {
   it('runs an import once; redelivery is a no-op; wrong tenant cannot run it', async () => {
     const { ImportProcessor } = await import('../src/import.processor');
     const { ImportService, seedPreset } = await import('@leaddesk/domain');
-    await runWithTenant(A, () => seedPreset(db.repos, 'generic'));
+    void seedPreset; // tenant A is already seeded by the InboxProcessor suite
     const svc = new ImportService(db);
     const up: any = await runWithTenant(A, async () => {
       const u = await svc.create({ buffer: Buffer.from('Name,Phone\nW1,9700000001\nW2,9700000002'), originalname: 'w.csv' });
@@ -85,6 +106,6 @@ describe('ImportProcessor', () => {
     expect(await p.process(job)).toMatchObject({ created: 2 });
     expect(await p.process(job)).toEqual({ skipped: true });
     expect(await p.process({ ...job, data: { tenantId: B, importId: up.id } })).toEqual({ skipped: true });
-    expect(await runWithTenant(A, () => db.repos.leads.count())).toBe(2);
+    expect(await runWithTenant(A, () => db.repos.leads.count({ displayName: { $in: ['W1', 'W2'] } }))).toBe(2);
   });
 });

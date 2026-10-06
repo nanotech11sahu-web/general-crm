@@ -8,6 +8,8 @@ export type Capability =
 export interface FieldDef {
   key: string; label: string; type: 'text' | 'secret' | 'select' | 'phone';
   required: boolean; help?: string; pattern?: string;
+  /** Platform generates the value (e.g. a webhook signing secret) and reveals it once. */
+  generated?: boolean;
 }
 
 /** Minimal request shape so verification is framework-agnostic. */
@@ -28,6 +30,8 @@ export interface ConnectorManifest {
   configFields: FieldDef[];
   capabilities: Capability[];
   webhook?: {
+    /** Which credential field holds the signing secret. */
+    secretKey: string;
     verify(req: RawRequest, secret: string): boolean;
     extractEventId(req: RawRequest): string;
   };
@@ -41,7 +45,11 @@ export type CanonicalEvent =
   | { kind: 'MessageStatus'; providerMessageId: string; status: string }
   | { kind: 'TemplateStatus'; templateId: string; status: string };
 
-export interface ConnectorContext { tenantId: string; connectionId: string; config: Record<string, unknown>; secret: () => Promise<string> }
+export interface ConnectorContext {
+  tenantId: string; connectionId: string; config: Record<string, unknown>;
+  /** Decrypted in memory at call time only; never log or persist. */
+  credentials: () => Promise<Record<string, string>>;
+}
 
 export interface Connector {
   manifest: ConnectorManifest;
@@ -81,10 +89,11 @@ export const websiteWebhook: Connector = {
   manifest: {
     id: 'website-webhook', category: 'lead_source', displayName: 'Website form (webhook)', logo: 'webhook', docsUrl: '',
     auth: { type: 'token' },
-    credentialFields: [{ key: 'signingSecret', label: 'Signing secret', type: 'secret', required: true }],
-    configFields: [],
+    credentialFields: [{ key: 'signingSecret', label: 'Signing secret', type: 'secret', required: true, generated: true, help: 'Sign the raw body with HMAC-SHA256 and send it as X-Signature-256: sha256=<hex>. Send a unique X-Event-Id per submission.' }],
+    configFields: [{ key: 'fieldMapping', label: 'Field mapping (JSON: payload key -> target)', type: 'text', required: false }],
     capabilities: ['lead.subscribe'],
     webhook: {
+      secretKey: 'signingSecret',
       verify: (req, secret) => verifyHmacSha256(req.rawBody, secret, h(req, 'x-signature-256')),
       extractEventId: (req) => h(req, 'x-event-id') ?? '',
     },

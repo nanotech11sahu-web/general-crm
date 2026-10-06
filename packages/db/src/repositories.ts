@@ -51,6 +51,9 @@ export function createRepositories(m: Models) {
     leads: new LeadRepository(m.Lead, contactIndex),
     connections: new ConnectionRepository(m.IntegrationConnection),
     inbox: new TenantScopedRepository(m.IntegrationInbox),
+    integrationLogs: new TenantScopedRepository(m.IntegrationLog),
+    healthChecks: new TenantScopedRepository(m.ConnectionHealthCheck),
+    notifications: new TenantScopedRepository(m.Notification),
     outbox: new OutboxRepository(m.Event),
     audit: new AuditRepository(m.AuditLog),
     counters: new TenantScopedRepository(m.Counter),
@@ -108,7 +111,7 @@ export function createSystemOps(m: Models) {
 
     listConnectionsForScheduler: () =>
       runAsSystem('scheduler.listConnections', () =>
-        m.IntegrationConnection.find({ status: { $ne: 'revoked' } }, { tenantId: 1, provider: 1, status: 1 }).lean().exec()),
+        m.IntegrationConnection.find({ status: { $ne: 'revoked' } }, { tenantId: 1, provider: 1, status: 1, oauthExpiresAt: 1, lastEventAt: 1, createdAt: 1 }).lean().exec()),
   };
 }
 export type SystemOps = ReturnType<typeof createSystemOps>;

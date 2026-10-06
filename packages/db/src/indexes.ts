@@ -41,6 +41,13 @@ export const INDEXES: Idx[] = [
   { collection: 'integrationinboxes', keys: { tenantId: 1, status: 1, receivedAt: 1 } },
   // raw payload retention: 90 days (configurable later by recreating the index)
   { collection: 'integrationinboxes', keys: { receivedAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
+  { collection: 'integrationlogs', keys: { tenantId: 1, connectionId: 1, at: -1 } },
+  { collection: 'integrationlogs', keys: { at: 1 }, options: { expireAfterSeconds: 30 * 86400 } },
+  { collection: 'connectionhealthchecks', keys: { tenantId: 1, connectionId: 1, at: -1 } },
+  { collection: 'connectionhealthchecks', keys: { at: 1 }, options: { expireAfterSeconds: 30 * 86400 } },
+  { collection: 'notifications', keys: { tenantId: 1, audience: 1, userId: 1, createdAt: -1 } },
+  { collection: 'notifications', keys: { tenantId: 1, dedupeKey: 1 }, options: { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } } },
+  { collection: 'notifications', keys: { createdAt: 1 }, options: { expireAfterSeconds: 90 * 86400 } },
   { collection: 'events', keys: { dispatchedAt: 1, claimedUntil: 1, _id: 1 } },
   { collection: 'events', keys: { tenantId: 1, type: 1, createdAt: -1 } },
   { collection: 'events', keys: { dispatchedAt: 1 }, options: { expireAfterSeconds: 7 * 86400, partialFilterExpression: { dispatchedAt: { $type: 'date' } } } },

@@ -86,25 +86,66 @@ describe('invitations & RBAC', () => {
   });
 });
 
-describe('connections: secrets are write-only and tenant isolated', () => {
-  it('never returns the secret; other tenant cannot see it', async () => {
+describe('connections (phase 2a): manifest-driven, secrets write-only, tenant isolated', () => {
+  it('lists connectors; creating generates and reveals the signing secret exactly once', async () => {
     const a = await signup('conna'); const b = await signup('connb');
-    const created = await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', category: 'lead_source', name: 'Site', secret: 'super-secret-9876' }).expect(201);
-    expect(JSON.stringify(created.body)).not.toContain('super-secret');
-    expect(created.body.secretHint).toBe('••••9876');
+    const connectors = (await request(http).get('/v1/connectors').set(auth(a.token)).expect(200)).body;
+    expect(connectors.map((c: any) => c.id)).toContain('website-webhook');
+    expect(JSON.stringify(connectors)).not.toMatch(/verify|function/);
+    const created = (await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', name: 'Site' }).expect(201)).body;
+    expect(created.connection.status).toBe('verified');
+    expect(created.revealedOnce.signingSecret).toHaveLength(43);
+    expect(created.connection.webhookPath).toMatch(/^\/hooks\/website-webhook\/.{20,}/);
     const listA = await request(http).get('/v1/connections').set(auth(a.token)).expect(200);
     expect(listA.body).toHaveLength(1);
-    expect(JSON.stringify(listA.body)).not.toMatch(/secretCiphertext|secretWrappedDek|super-secret/);
+    expect(JSON.stringify(listA.body)).not.toContain(created.revealedOnce.signingSecret);
+    expect(JSON.stringify(listA.body)).not.toMatch(/secretCiphertext|secretWrappedDek/);
     expect((await request(http).get('/v1/connections').set(auth(b.token)).expect(200)).body).toHaveLength(0);
+    await request(http).post(`/v1/connections/${created.connection.id}/verify`).set(auth(b.token)).expect(404);
+    await request(http).get(`/v1/connections/${created.connection.id}/logs`).set(auth(b.token)).expect(404);
+    await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'nope', name: 'x' }).expect(422);
+    await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', name: 'x', credentials: { bogus: '1' } }).expect(422);
   });
-  it('decrypts at call time through the service (BSON Binary round trip), and not across tenants', async () => {
-    const { ConnectionsService } = await import('../src/connections/connections.module');
-    const { runWithTenant } = await import('@leaddesk/db');
-    const svc = app.get(ConnectionsService);
-    const a = await signup('wa'); const b = await signup('wb');
-    const made = await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'x', category: 'lead_source', name: 'n', secret: 'plain-secret-4321' }).expect(201);
-    expect(await runWithTenant(a.tenantId, () => svc.withSecret(made.body.id, async (s) => s))).toBe('plain-secret-4321');
-    await expect(runWithTenant(b.tenantId, () => svc.withSecret(made.body.id, async (s) => s))).rejects.toThrow('Connection not found');
+  it('test lead goes end to end through the intake pipeline; logs and health are recorded', async () => {
+    const a = await signup('conntest');
+    const c = (await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', name: 'Landing' }).expect(201)).body.connection;
+    const t = (await request(http).post(`/v1/connections/${c.id}/test`).set(auth(a.token)).send({}).expect(201)).body;
+    expect(t.status).toBe('done'); expect(t.leads[0].outcome).toBe('created');
+    const leads = (await request(http).get('/v1/leads').set(auth(a.token)).expect(200)).body.items;
+    expect(leads[0].displayName).toBe('Test Lead (safe to delete)');
+    const h = (await request(http).get(`/v1/connections/${c.id}/health`).set(auth(a.token)).expect(200)).body;
+    expect(h.checks.some((x: any) => x.check === 'verify' && x.ok)).toBe(true);
+    expect(h.connection.lastEventAt).toBeTruthy();
+    const logs = (await request(http).get(`/v1/connections/${c.id}/logs`).set(auth(a.token)).expect(200)).body;
+    expect(logs.map((l: any) => l.message)).toEqual(expect.arrayContaining(['Connection created', 'Verified']));
+  });
+  it('needs-attention list, fix mapping, replay', async () => {
+    const a = await signup('connfix');
+    const c = (await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', name: 'Odd form' }).expect(201)).body.connection;
+    // a payload whose phone lives under an unrecognised key => rejected, not silently dropped
+    const bad = (await request(http).post(`/v1/connections/${c.id}/test`).set(auth(a.token)).send({ fields: { id: 'x1', fullname: 'Odd', zz_digits: '9876543210' } }).expect(201)).body;
+    expect(bad.status).toBe('failed');
+    const failed = (await request(http).get('/v1/inbox').set(auth(a.token)).expect(200)).body;
+    expect(failed).toHaveLength(1); expect(failed[0].error).toMatch(/rejected/i);
+    await request(http).put(`/v1/connections/${c.id}/config`).set(auth(a.token)).send({ config: { fieldMapping: JSON.stringify({ zz_digits: 'phone', fullname: 'name' }) } }).expect(200);
+    const re = (await request(http).post(`/v1/inbox/${failed[0]._id}/replay`).set(auth(a.token)).expect(201)).body;
+    expect(re.status).toBe('done'); expect(re.leads[0].outcome).toBe('created');
+    expect((await request(http).get('/v1/inbox').set(auth(a.token)).expect(200)).body).toHaveLength(0);
+    await request(http).put(`/v1/connections/${c.id}/config`).set(auth(a.token)).send({ config: { evil: 1 } }).expect(422);
+  });
+  it('reconnect re-verifies before swapping; revoke blocks verify; managers can view but not manage', async () => {
+    const a = await signup('connrev');
+    const c = (await request(http).post('/v1/connections').set(auth(a.token)).send({ provider: 'website-webhook', name: 'R' }).expect(201)).body.connection;
+    const r = (await request(http).post(`/v1/connections/${c.id}/reconnect`).set(auth(a.token)).send({ credentials: { signingSecret: 'brand-new-secret-9999' } }).expect(201)).body;
+    expect(r.connection.secretHint).toBe('••••9999');
+    await request(http).post(`/v1/connections/${c.id}/reconnect`).set(auth(a.token)).send({ credentials: { signingSecret: '' } }).expect(201); // blank => regenerated
+    await request(http).delete(`/v1/connections/${c.id}`).set(auth(a.token)).expect(200);
+    await request(http).post(`/v1/connections/${c.id}/verify`).set(auth(a.token)).expect(422);
+    const inv = await request(http).post('/v1/invitations').set(auth(a.token)).send({ email: 'connrev-m@x.io', role: 'manager' }).expect(201);
+    const mgr = (await request(http).post(`/v1/invitations/${inv.body.inviteToken}/accept`).send({ name: 'M', password: 'manager-pass-1' }).expect(201)).body.accessToken;
+    await request(http).get('/v1/connections').set(auth(mgr)).expect(200);
+    await request(http).post('/v1/connections').set(auth(mgr)).send({ provider: 'website-webhook', name: 'z' }).expect(403);
+    await request(http).get('/v1/inbox').set(auth(mgr)).expect(403);
   });
 });
 

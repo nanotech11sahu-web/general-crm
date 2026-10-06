@@ -12,7 +12,7 @@ export const REGISTRY = Symbol('REGISTRY');
 @Controller('hooks')
 export class HooksController {
   private readonly log = new Logger('Ingress');
-  private readonly secretCache = new Map<string, { v: string; exp: number }>();
+  private readonly secretCache = new Map<string, { v: Record<string, string>; exp: number }>();
 
   constructor(
     @Inject(SYSTEM_OPS) private readonly sys: SystemOps,
@@ -22,11 +22,11 @@ export class HooksController {
     @Inject(INBOX_QUEUE) private readonly queue: InboxQueue,
   ) {}
 
-  private async secretOf(c: any): Promise<string> {
+  private async credsOf(c: any): Promise<Record<string, string>> {
     const id = String(c._id);
     const hit = this.secretCache.get(id);
     if (hit && hit.exp > Date.now()) return hit.v;
-    const v = await openSecret(this.keys, { tenantId: String(c.tenantId), connectionId: id }, { ciphertext: c.secretCiphertext, wrappedDek: c.secretWrappedDek });
+    const v = JSON.parse(await openSecret(this.keys, { tenantId: String(c.tenantId), connectionId: id }, { ciphertext: c.secretCiphertext, wrappedDek: c.secretWrappedDek })) as Record<string, string>;
     this.secretCache.set(id, { v, exp: Date.now() + 60_000 });
     return v;
   }
@@ -49,7 +49,8 @@ export class HooksController {
 
     const rawBody = req.rawBody ?? Buffer.alloc(0);
     const raw = { headers, rawBody, query };
-    const valid = connector.manifest.webhook.verify(raw, await this.secretOf(conn));
+    const creds = await this.credsOf(conn);
+    const valid = connector.manifest.webhook.verify(raw, creds[connector.manifest.webhook.secretKey] ?? '');
     if (!valid) {
       this.log.warn(`invalid signature provider=${provider} connection=${conn._id} tenant=${conn.tenantId}`);
       throw new UnauthorizedException();

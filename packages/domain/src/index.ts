@@ -6,3 +6,6 @@ export * from './lead-service';
 export * from './search';
 export * from './offboard';
 export * from './import';
+export * from './field-map';
+export * from './connections';
+export * from './inbox';

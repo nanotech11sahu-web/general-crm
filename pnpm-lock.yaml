@@ -253,6 +253,12 @@ importers:
 
   packages/domain:
     dependencies:
+      '@leaddesk/connectors-core':
+        specifier: workspace:*
+        version: link:../connectors/core
+      '@leaddesk/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@leaddesk/db':
         specifier: workspace:*
         version: link:../db

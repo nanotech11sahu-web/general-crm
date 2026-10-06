@@ -34,7 +34,7 @@ beforeAll(async () => {
   tenantId = String(tenant._id);
   connId = String(newObjectId());
   publicId = 'pub_' + randomBytes(8).toString('hex');
-  const sealed = await sealSecret(new LocalKeyService(kek), { tenantId, connectionId: connId }, secret);
+  const sealed = await sealSecret(new LocalKeyService(kek), { tenantId, connectionId: connId }, JSON.stringify({ signingSecret: secret }));
   await runWithTenant(tenantId, () => db.repos.connections.create({
     _id: connId, provider: 'website-webhook', category: 'lead_source', name: 'site', publicId, status: 'verified',
     secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef, secretHint: sealed.hint,

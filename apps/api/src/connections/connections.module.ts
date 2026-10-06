@@ -1,60 +1,120 @@
-import { Body, Controller, Get, Inject, Injectable, Module, Post } from '@nestjs/common';
-import { IsString, MinLength } from 'class-validator';
-import { randomBytes } from 'node:crypto';
-import { openSecret, sealSecret, type KeyService } from '@leaddesk/crypto';
-import { newObjectId, requireTenantId, type TenantDb } from '@leaddesk/db';
-import { AuditService } from '../audit/audit.service';
+import { Body, Controller, Delete, Get, Inject, Injectable, Logger, Module, Param, Post, Put, Query } from '@nestjs/common';
+import { IsObject, IsOptional, IsString, MinLength } from 'class-validator';
+import { defaultRegistry, type ConnectorRegistry } from '@leaddesk/connectors-core';
+import type { KeyService } from '@leaddesk/crypto';
+import { ConnectionService, InboxService } from '@leaddesk/domain';
 import { KEY_SERVICE, TENANT_DB } from '@leaddesk/platform';
-import { RequirePermission } from '../common/guards';
+import { runWithTenant, type TenantDb } from '@leaddesk/db';
+import { AuditService } from '../audit/audit.service';
+import { CurrentUser, RequirePermission } from '../common/guards';
+import type { AuthUser } from '../common/auth.types';
+
+export const REGISTRY = Symbol('REGISTRY');
 
 class CreateConnectionDto {
   @IsString() provider!: string;
-  @IsString() category!: string;
   @IsString() @MinLength(1) name!: string;
-  @IsString() @MinLength(1) secret!: string;
+  @IsOptional() @IsObject() credentials?: Record<string, string>;
+  @IsOptional() @IsObject() config?: Record<string, unknown>;
 }
+class ReconnectDto {
+  @IsObject() credentials!: Record<string, string>;
+  @IsOptional() @IsObject() config?: Record<string, unknown>;
+}
+class ConfigDto { @IsObject() config!: Record<string, unknown> }
+class TestLeadDto { @IsOptional() @IsObject() fields?: Record<string, unknown> }
 
 @Injectable()
-export class ConnectionsService {
+export class ConnectFacade {
+  readonly conns: ConnectionService;
+  readonly inbox: InboxService;
+  private readonly log = new Logger('Connect');
   constructor(
-    @Inject(TENANT_DB) private readonly db: TenantDb,
-    @Inject(KEY_SERVICE) private readonly keys: KeyService,
-    private readonly audit: AuditService,
-  ) {}
-
-  /** Secrets are write-only: sealed on the way in, never returned. */
-  async create(i: CreateConnectionDto) {
-    const tenantId = requireTenantId();
-    const id = newObjectId();
-    const sealed = await sealSecret(this.keys, { tenantId, connectionId: String(id) }, i.secret);
-    const conn: any = await this.db.repos.connections.create({
-      _id: id, provider: i.provider, category: i.category, name: i.name,
-      publicId: randomBytes(18).toString('base64url'),
-      secretCiphertext: sealed.ciphertext, secretWrappedDek: sealed.wrappedDek, secretKeyRef: sealed.keyRef, secretHint: sealed.hint,
-    });
-    await this.audit.record({ action: 'connection.created', entity: 'connection', entityId: String(conn._id), meta: { provider: i.provider } });
-    return this.view(conn);
+    @Inject(TENANT_DB) readonly db: TenantDb,
+    @Inject(KEY_SERVICE) keys: KeyService,
+    @Inject(REGISTRY) readonly registry: ConnectorRegistry,
+    readonly audit: AuditService,
+  ) {
+    this.conns = new ConnectionService(db, keys, registry);
+    this.inbox = new InboxService(db, registry);
   }
-  async list() { return (await this.db.repos.connections.listSafe()).map((c: any) => this.view(c)); }
-
-  /** Decrypt only at call time, in memory, inside the connector execution layer. */
-  async withSecret<T>(connectionId: string, fn: (secret: string) => Promise<T>): Promise<T> {
-    const c: any = await this.db.repos.connections.findOne({ _id: connectionId });
-    if (!c) throw new Error('Connection not found');
-    return fn(await openSecret(this.keys, { tenantId: requireTenantId(), connectionId }, { ciphertext: c.secretCiphertext, wrappedDek: c.secretWrappedDek }));
-  }
-
-  private view(c: any) {
-    return { id: String(c._id), provider: c.provider, category: c.category, name: c.name, status: c.status, publicId: c.publicId, secretHint: c.secretHint };
+  /** Replay runs in-process like imports; the worker runs the same InboxService from the queue. */
+  replayAsync(tenantId: string, userId: string, inboxId: string) {
+    setImmediate(() => { runWithTenant(tenantId, () => this.inbox.replay(inboxId), { userId }).catch((e) => this.log.error(`replay ${inboxId}: ${e?.message}`)); });
   }
 }
 
-@Controller('v1/connections')
-export class ConnectionsController {
-  constructor(private readonly svc: ConnectionsService) {}
-  @Get() @RequirePermission('connections.view') list() { return this.svc.list(); }
-  @Post() @RequirePermission('connections.manage') create(@Body() b: CreateConnectionDto) { return this.svc.create(b); }
+@Controller('v1')
+export class ConnectController {
+  constructor(private readonly f: ConnectFacade) {}
+
+  /** The UI is generated from these manifests: adding a provider needs no frontend change. */
+  @Get('connectors') @RequirePermission('connections.view')
+  connectors() { return this.f.registry.manifests().map(({ webhook, ...m }) => ({ ...m, hasWebhook: !!webhook })); }
+
+  @Get('connections') @RequirePermission('connections.view')
+  list() { return this.f.conns.list(); }
+
+  @Post('connections') @RequirePermission('connections.manage')
+  async create(@Body() b: CreateConnectionDto) {
+    const { connection, revealedOnce, capabilities } = await this.f.conns.create(b);
+    await this.f.audit.record({ action: 'connection.created', entity: 'connection', entityId: connection.id, meta: { provider: b.provider } });
+    return { connection, revealedOnce, capabilities }; // revealedOnce is shown exactly once; secrets are never returned again
+  }
+
+  @Post('connections/:id/verify') @RequirePermission('connections.manage')
+  verify(@Param('id') id: string) { return this.f.conns.verify(id); }
+
+  @Post('connections/:id/test') @RequirePermission('connections.manage')
+  async test(@Param('id') id: string, @Body() b: TestLeadDto) {
+    const out = await this.f.inbox.testLead(id, b.fields ?? { id: `test-${Date.now()}`, name: 'Test Lead (safe to delete)', phone: `+9199${String(Date.now()).slice(-8)}`, source: 'connection test' });
+    await this.f.audit.record({ action: 'connection.test_lead', entity: 'connection', entityId: id });
+    return out;
+  }
+
+  @Post('connections/:id/reconnect') @RequirePermission('connections.manage')
+  async reconnect(@Param('id') id: string, @Body() b: ReconnectDto) {
+    const out = await this.f.conns.replaceCredentials(id, b.credentials, b.config);
+    await this.f.audit.record({ action: 'connection.credentials_replaced', entity: 'connection', entityId: id });
+    return out;
+  }
+
+  @Put('connections/:id/config') @RequirePermission('connections.manage')
+  config(@Param('id') id: string, @Body() b: ConfigDto) { return this.f.conns.setConfig(id, b.config); }
+
+  @Delete('connections/:id') @RequirePermission('connections.manage')
+  async revoke(@Param('id') id: string) {
+    await this.f.conns.revoke(id);
+    await this.f.audit.record({ action: 'connection.revoked', entity: 'connection', entityId: id });
+    return { ok: true };
+  }
+
+  @Get('connections/:id/health') @RequirePermission('connections.view')
+  async health(@Param('id') id: string) {
+    const c = await this.f.conns.get(id);
+    return { connection: this.f.conns.view(c), checks: await this.f.conns.checks(id) };
+  }
+
+  @Get('connections/:id/logs') @RequirePermission('connections.view')
+  logs(@Param('id') id: string) { return this.f.conns.logs(id); }
+
+  @Get('inbox') @RequirePermission('connections.manage')
+  inbox(@Query('status') status?: string) {
+    if (status && !['failed', 'dead', 'failed,dead'].includes(status)) return this.f.db.repos.inbox.find({ status }, { sort: { receivedAt: -1 }, limit: 100 });
+    return this.f.inbox.needsAttention();
+  }
+
+  @Post('inbox/:id/replay') @RequirePermission('connections.manage')
+  async replay(@CurrentUser() u: AuthUser, @Param('id') id: string) {
+    const out = await this.f.inbox.replay(id);
+    await this.f.audit.record({ action: 'inbox.replayed', entity: 'inbox', entityId: id });
+    return out;
+  }
 }
 
-@Module({ controllers: [ConnectionsController], providers: [ConnectionsService], exports: [ConnectionsService] })
+@Module({
+  controllers: [ConnectController],
+  providers: [ConnectFacade, { provide: REGISTRY, useFactory: defaultRegistry }],
+  exports: [ConnectFacade],
+})
 export class ConnectionsModule {}

@@ -244,6 +244,29 @@ export function buildModels(conn: Connection) {
     at: { type: Date, default: Date.now },
   }, { timestamps: false });
 
+  const IntegrationLog = make(conn, 'IntegrationLog', {
+    connectionId: { type: ObjectId, required: true },
+    level: { type: String, enum: ['info', 'warn', 'error'], default: 'info' },
+    message: { type: String, required: true },
+    meta: Schema.Types.Mixed,
+    at: { type: Date, default: Date.now },
+  }, { timestamps: false });
+  const ConnectionHealthCheck = make(conn, 'ConnectionHealthCheck', {
+    connectionId: { type: ObjectId, required: true },
+    check: { type: String, required: true },
+    ok: { type: Boolean, required: true },
+    detail: String,
+    at: { type: Date, default: Date.now },
+  }, { timestamps: false });
+  const Notification = make(conn, 'Notification', {
+    userId: ObjectId, // null = every admin/owner of the tenant
+    audience: { type: String, enum: ['user', 'admins'], default: 'user' },
+    kind: { type: String, required: true },
+    payload: Schema.Types.Mixed,
+    dedupeKey: String,
+    readAt: Date,
+  });
+
   const Counter = make(conn, 'Counter', {
     key: { type: String, required: true },
     seq: { type: Number, default: 0 },
@@ -252,7 +275,7 @@ export function buildModels(conn: Connection) {
   return {
     Tenant, User, Membership, Team, Invitation, RefreshToken, Lead, LeadContactIndex,
     LeadStatus, LostReason, LeadSource, CustomFieldDef, Activity, LeadMerge, SavedView, ImportJob, ImportRow, ImportMapping, ImportRowError,
-    IntegrationConnection, IntegrationInbox, Event, AuditLog, Counter,
+    IntegrationConnection, IntegrationInbox, IntegrationLog, ConnectionHealthCheck, Notification, Event, AuditLog, Counter,
   };
 }
 export type Models = ReturnType<typeof buildModels>;

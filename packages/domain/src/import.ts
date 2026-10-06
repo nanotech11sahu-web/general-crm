@@ -71,7 +71,10 @@ const HINTS: [string, RegExp][] = [
 
 /** Heuristic column detection (AI-assisted mapping is a later, optional layer). */
 export async function suggestMapping(db: TenantDb, headers: string[]): Promise<Mapping> {
-  const defs: any[] = await db.repos.customFields.find();
+  return suggestMappingFor(headers, await db.repos.customFields.find());
+}
+
+export function suggestMappingFor(headers: string[], defs: any[]): Mapping {
   const out: Mapping = {};
   const usedSingle = new Set<string>();
   for (const h of headers) {
