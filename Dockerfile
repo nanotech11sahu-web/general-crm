@@ -2,7 +2,7 @@
 # The services are compiled to plain CommonJS at build time (scripts/build-dist.cjs, SWC with decorator metadata) and run with
 # `node -r scripts/use-dist.cjs <service>/dist/main.js`: no TypeScript toolchain at runtime. Dev dependencies are installed because the build needs them.
 # NOT built or run in the authoring sandbox: build it in CI before first deploy (see docs/runbook.md#deploying).
-FROM node:22-slim AS base
+FROM node:25-slim AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH NODE_ENV=production
 RUN corepack enable && apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
