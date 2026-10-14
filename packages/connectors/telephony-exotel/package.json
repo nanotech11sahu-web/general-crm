@@ -5,5 +5,5 @@
   "main": "src/index.ts",
   "scripts": { "typecheck": "tsc -p . --noEmit", "test": "vitest run" },
   "dependencies": { "@leaddesk/connectors-core": "workspace:*" },
-  "devDependencies": { "@types/node": "^22.10.0" }
+  "devDependencies": { "@types/node": "^26.6.5" }
 }
